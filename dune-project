@@ -1,7 +1,7 @@
 (lang dune 3.12)
 (name hpke)
 (generate_opam_files false)
-(source (github ville/ocaml-hpke))
+(source (github thevilledev/ocaml-hpke))
 (license ISC)
 (authors "Ville Vesilehto <ville@vesilehto.fi>")
 (maintainers "Ville Vesilehto <ville@vesilehto.fi>")

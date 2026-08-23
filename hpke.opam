@@ -7,9 +7,9 @@ modes. Cryptographic primitives are delegated to Mirage Crypto and Digestif.
 maintainer: ["Ville Vesilehto <ville@vesilehto.fi>"]
 authors: ["Ville Vesilehto <ville@vesilehto.fi>"]
 license: "ISC"
-homepage: "https://github.com/ville/ocaml-hpke"
-bug-reports: "https://github.com/ville/ocaml-hpke/issues"
-dev-repo: "git+https://github.com/ville/ocaml-hpke.git"
+homepage: "https://github.com/thevilledev/ocaml-hpke"
+bug-reports: "https://github.com/thevilledev/ocaml-hpke/issues"
+dev-repo: "git+https://github.com/thevilledev/ocaml-hpke.git"
 depends: [
   "ocaml" {>= "4.14"}
   "dune" {>= "3.12"}

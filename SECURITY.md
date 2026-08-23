@@ -30,6 +30,3 @@ not publish the package as production-ready.
 - OCaml garbage collection prevents guaranteed secret zeroization. Processes
   handling long-lived secrets should minimize retention and consider process
   isolation appropriate to their threat model.
-
-The complete assurance boundary and protocol non-goals are documented in
-[docs/ASSURANCE.md](docs/ASSURANCE.md).

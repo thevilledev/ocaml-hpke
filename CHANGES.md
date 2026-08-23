@@ -12,4 +12,4 @@
   normalized single-shot open errors.
 - Add pinned RFC vectors, all-suite round trips, adversarial/state tests,
   QCheck properties, and Crowbar fuzz targets.
-- Add assurance, threat-model, security, and external-review documentation.
+- Add a security policy and release-readiness checks.

@@ -10,8 +10,8 @@ The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
 
 > **Pre-release status:** `0.1.0-dev` is for interoperability review. It has not
-> received an independent cryptographic audit. See [ASSURANCE.md](docs/ASSURANCE.md)
-> and [SECURITY.md](SECURITY.md) before using it with sensitive data.
+> received an independent cryptographic audit. See [SECURITY.md](SECURITY.md)
+> before using it with sensitive data.
 
 ## Supported algorithms
 
@@ -93,8 +93,7 @@ opam lint hpke.opam
 ```
 
 Official test-vector provenance is pinned in
-[test-vectors/PROVENANCE.md](test-vectors/PROVENANCE.md). Release readiness is
-tracked by [REVIEW_CHECKLIST.md](docs/REVIEW_CHECKLIST.md).
+[test-vectors/PROVENANCE.md](test-vectors/PROVENANCE.md).
 
 ## Acknowledgments
 
