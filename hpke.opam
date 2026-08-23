@@ -21,7 +21,7 @@ depends: [
   "eqaf" {>= "0.10"}
   "alcotest" {with-test & >= "1.7.0"}
   "qcheck-alcotest" {with-test & >= "0.25"}
-  "crowbar" {with-test & >= "0.2"}
+  "crowbar" {with-test & >= "0.2.1"}
   "odoc" {with-doc}
   "ocamlformat" {with-dev-setup & = "0.29.0"}
 ]
