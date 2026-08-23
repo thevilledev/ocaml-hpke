@@ -9,7 +9,7 @@ elliptic-curve, hash, and AEAD primitives to Mirage Crypto, Digestif, and
 The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
 
-> **Pre-release status:** `0.1.0-dev` is for interoperability review. It has not
+> **Release status:** `0.1.0` is for interoperability review. It has not
 > received an independent cryptographic audit. See [SECURITY.md](SECURITY.md)
 > before using it with sensitive data.
 

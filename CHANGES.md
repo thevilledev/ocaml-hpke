@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-dev — 2026-08-23
+## 0.1.0 — 2026-08-23
 
 - Add RFC 9180 Base and PSK setup, stateful contexts, single-shot APIs, and
   export-only suites.

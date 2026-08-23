@@ -7,6 +7,7 @@ modes. Cryptographic primitives are delegated to Mirage Crypto and Digestif.
 maintainer: ["Ville Vesilehto <ville@vesilehto.fi>"]
 authors: ["Ville Vesilehto <ville@vesilehto.fi>"]
 license: "ISC"
+tags: ["cryptography" "hpke" "rfc9180" "hybrid encryption"]
 homepage: "https://github.com/thevilledev/ocaml-hpke"
 bug-reports: "https://github.com/thevilledev/ocaml-hpke/issues"
 dev-repo: "git+https://github.com/thevilledev/ocaml-hpke.git"
