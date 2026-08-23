@@ -1,0 +1,10 @@
+(library
+ (name hpke)
+ (public_name hpke)
+ (libraries
+  mirage-crypto
+  mirage-crypto-ec
+  mirage-crypto-rng
+  kdf.hkdf
+  digestif
+  eqaf))

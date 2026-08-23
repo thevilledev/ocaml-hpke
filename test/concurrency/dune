@@ -1,0 +1,5 @@
+(test
+ (name test_concurrency)
+ (libraries hpke mirage-crypto-rng)
+ (enabled_if
+  (>= %{ocaml_version} 5.0)))

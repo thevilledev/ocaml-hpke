@@ -1,0 +1,5 @@
+(executable
+ (name fuzz_hpke)
+ (libraries hpke crowbar)
+ (enabled_if
+  (= %{profile} fuzz)))
