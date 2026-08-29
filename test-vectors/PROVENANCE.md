@@ -5,6 +5,24 @@ Appendix A of [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html), whose
 machine-readable source is pinned at CFRG commit
 [`5f503c564da00b0687b3de75f1dfbdfc4079ad31`](https://github.com/cfrg/draft-irtf-cfrg-hpke/blob/5f503c564da00b0687b3de75f1dfbdfc4079ad31/test-vectors.json).
 
+`rfc9180-supported.json` is a reproducible reduction of that machine-readable
+source. It contains all 48 combinations supported by this library and present
+in the RFC corpus: Base and PSK modes over P-256, P-521, and X25519; the
+SHA-256 and SHA-512 KDFs; and every RFC AEAD including export-only. Most
+combinations retain the first three encryption records. Three representative
+suites retain all 257 records so that sequence numbers crossing the one-byte
+boundary are covered.
+
+Regenerate the corpus from the pinned source with:
+
+```sh
+python3 tools/extract_rfc9180_vectors.py test-vectors.json \
+  test-vectors/rfc9180-supported.json
+```
+
+The generated file records the source URL, commit, and SHA-256 digest. The
+extractor fails unless it selects exactly 48 vectors and three full sequences.
+
 The included fixtures cover:
 
 - A.1.1: X25519 / HKDF-SHA256 / AES-128-GCM, Base mode;
