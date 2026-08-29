@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="The KEM, KDF, and AEAD registries hpke implements, with RFC 9180 codepoints, sizes, limits, and deliberate omissions.">
+    <meta name="theme-color" content="#ffffff">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="hpke ciphersuites">
+    <meta property="og:description" content="Codepoints, sizes, validation rules, and what is deliberately not implemented.">
+    <meta property="og:url" content="https://ville.dev/ocaml-hpke/suites.html">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="hpke ciphersuites">
+    <meta name="twitter:description" content="Codepoints, sizes, validation rules, and what is deliberately not implemented.">
+    <link rel="canonical" href="https://ville.dev/ocaml-hpke/suites.html">
+    <link rel="stylesheet" href="styles.css">
+    <title>Ciphersuites supported by hpke</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <nav class="top" aria-label="Primary navigation">
+      [ <a href="index.html">overview</a> |
+      <a href="usage.html">usage</a> |
+      suites |
+      <a href="security.html">security</a> |
+      <a href="development.html">dev</a> |
+      <a href="https://github.com/thevilledev/ocaml-hpke">source</a> ]
+    </nav>
+
+    <main id="content">
+      <h1>Ciphersuites</h1>
+
+      <p>
+        Each registry is a closed OCaml variant, not an integer. Unknown
+        codepoints cannot be constructed at all; <code>of_int</code> is the only
+        way in from the wire, and it returns
+        <code>Unsupported_algorithm</code> for anything outside the tables
+        below.
+      </p>
+
+      <pre><code>let suite =
+  Suite.create ~kem:Kem.X25519 ~kdf:Kdf.Hkdf_sha256
+    ~aead:Aead.Aes_128_gcm
+
+let exporter =
+  Suite.export_only ~kem:Kem.P384 ~kdf:Kdf.Hkdf_sha384</code></pre>
+
+      <p>
+        Four KEMs, three KDFs, and three AEADs give 36 encryption suites; every
+        one of them is round-tripped by the test suite in Base mode. Dropping
+        the AEAD gives 12 further export-only suites.
+      </p>
+
+      <h2 id="kem">KEM</h2>
+
+      <div class="table-scroll">
+        <table>
+          <caption>Key encapsulation mechanisms, all DHKEM</caption>
+          <thead>
+            <tr>
+              <th scope="col">Constructor</th>
+              <th scope="col">RFC 9180 name</th>
+              <th scope="col" class="n">ID</th>
+              <th scope="col" class="n">Public / enc</th>
+              <th scope="col" class="n">Private</th>
+              <th scope="col" class="n">Secret</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>Kem.P256</code></td><td>DHKEM(P-256, HKDF-SHA256)</td><td class="n">0x0010</td><td class="n">65</td><td class="n">32</td><td class="n">32</td></tr>
+            <tr><td><code>Kem.P384</code></td><td>DHKEM(P-384, HKDF-SHA384)</td><td class="n">0x0011</td><td class="n">97</td><td class="n">48</td><td class="n">48</td></tr>
+            <tr><td><code>Kem.P521</code></td><td>DHKEM(P-521, HKDF-SHA512)</td><td class="n">0x0012</td><td class="n">133</td><td class="n">66</td><td class="n">64</td></tr>
+            <tr><td><code>Kem.X25519</code></td><td>DHKEM(X25519, HKDF-SHA256)</td><td class="n">0x0020</td><td class="n">32</td><td class="n">32</td><td class="n">32</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="fine">
+        Sizes are bytes. An encapsulated key has the same size as a public key,
+        because it is one. <code>Kem.public_key_size</code>,
+        <code>Kem.private_key_size</code>, and
+        <code>Kem.encapsulated_key_size</code> report these at run time.
+      </p>
+
+      <h2 id="kdf">KDF</h2>
+
+      <div class="table-scroll">
+        <table>
+          <caption>Key derivation functions</caption>
+          <thead>
+            <tr>
+              <th scope="col">Constructor</th>
+              <th scope="col">Name</th>
+              <th scope="col" class="n">ID</th>
+              <th scope="col" class="n">Hash size</th>
+              <th scope="col" class="n">Longest export</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>Kdf.Hkdf_sha256</code></td><td>HKDF-SHA256</td><td class="n">0x0001</td><td class="n">32</td><td class="n">8,160</td></tr>
+            <tr><td><code>Kdf.Hkdf_sha384</code></td><td>HKDF-SHA384</td><td class="n">0x0002</td><td class="n">48</td><td class="n">12,240</td></tr>
+            <tr><td><code>Kdf.Hkdf_sha512</code></td><td>HKDF-SHA512</td><td class="n">0x0003</td><td class="n">64</td><td class="n">16,320</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="fine">
+        The export ceiling is HKDF's own: 255 times the hash size. Asking for
+        more, or for a negative length, returns
+        <code>Export_length_out_of_range</code> rather than a truncated answer.
+      </p>
+
+      <h2 id="aead">AEAD</h2>
+
+      <div class="table-scroll">
+        <table>
+          <caption>Authenticated encryption</caption>
+          <thead>
+            <tr>
+              <th scope="col">Constructor</th>
+              <th scope="col">Name</th>
+              <th scope="col" class="n">ID</th>
+              <th scope="col" class="n">Key</th>
+              <th scope="col" class="n">Nonce</th>
+              <th scope="col" class="n">Tag</th>
+              <th scope="col" class="n">Longest plaintext</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>Aead.Aes_128_gcm</code></td><td>AES-128-GCM</td><td class="n">0x0001</td><td class="n">16</td><td class="n">12</td><td class="n">16</td><td class="n">2<sup>36</sup> &minus; 31</td></tr>
+            <tr><td><code>Aead.Aes_256_gcm</code></td><td>AES-256-GCM</td><td class="n">0x0002</td><td class="n">32</td><td class="n">12</td><td class="n">16</td><td class="n">2<sup>36</sup> &minus; 31</td></tr>
+            <tr><td><code>Aead.Chacha20_poly1305</code></td><td>ChaCha20-Poly1305</td><td class="n">0x0003</td><td class="n">32</td><td class="n">12</td><td class="n">16</td><td class="n">2<sup>38</sup> &minus; 64</td></tr>
+            <tr><td><code>Suite.export_only</code></td><td>Export-only</td><td class="n">0xFFFF</td><td class="n">&mdash;</td><td class="n">&mdash;</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Export-only is a distinct suite type rather than an AEAD value, so it
+        cannot be passed to <code>seal</code> or <code>open_</code>: the
+        capability parameter on <code>Suite.t</code> makes that a type error.
+        Its <code>0xFFFF</code> codepoint still enters the key schedule's suite
+        identifier, as RFC 9180 requires, so export secrets are domain-separated
+        from encryption suites.
+      </p>
+
+      <h2 id="modes">Modes</h2>
+
+      <table>
+        <caption>RFC 9180 modes</caption>
+        <thead>
+          <tr><th scope="col">Mode</th><th scope="col" class="n">ID</th><th scope="col">Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Base</td><td class="n">0x00</td><td>Implemented.</td></tr>
+          <tr><td>PSK</td><td class="n">0x01</td><td>Implemented. Secrets of at least 32 bytes, non-empty identifier.</td></tr>
+          <tr><td>Auth</td><td class="n">0x02</td><td>Not part of the initial surface.</td></tr>
+          <tr><td>AuthPSK</td><td class="n">0x03</td><td>Not part of the initial surface.</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="omissions">Deliberate omissions</h2>
+
+      <ul>
+        <li>
+          <strong>X448.</strong> There is no suitable maintained primitive in
+          the selected OCaml backend. An unmaintained one would be worse than an
+          absent suite.
+        </li>
+        <li>
+          <strong>Auth and AuthPSK.</strong> Sender authentication is not in the
+          initial surface. Adding it later adds constructors; it does not change
+          the behavior of the modes above.
+        </li>
+        <li>
+          <strong>A wire format.</strong> <code>encapsulated_key</code> and
+          <code>ciphertext</code> stay separate fields. The library will not
+          invent a framing that applications would then have to live with
+          forever.
+        </li>
+        <li>
+          <strong>Compressed points.</strong> NIST public keys must be in
+          uncompressed SEC1 form, which is what RFC 9180 specifies.
+        </li>
+        <li>
+          <strong>Secret printers and equality helpers.</strong> Private keys
+          and PSKs have no <code>pp</code> and no comparison function, so they
+          cannot casually reach a log line or a timing-variable comparison.
+        </li>
+      </ul>
+
+      <h2 id="validation">Validation</h2>
+
+      <table>
+        <caption>What is checked, and where</caption>
+        <tbody>
+          <tr><th scope="row">Public keys</th><td>Exact encoded length. NIST keys must start with the uncompressed SEC1 marker and lie on the curve. X25519 low-order values are rejected when the key is used.</td></tr>
+          <tr><th scope="row">Private keys</th><td>Exact encoded length. NIST scalars must be non-zero and below the curve order, compared in constant time. X25519 scalars are clamped on parse and on output.</td></tr>
+          <tr><th scope="row">Encapsulated keys</th><td>Parsed as a public key for the suite's KEM. Context-level setup reports the failure structurally; single-shot opens normalize it.</td></tr>
+          <tr><th scope="row">Suite agreement</th><td>A key whose KEM differs from the suite's KEM yields <code>Key_mismatch</code> before any cryptography.</td></tr>
+          <tr><th scope="row">PSKs</th><td>Secret of at least 32 bytes and a non-empty identifier. A length check cannot establish entropy.</td></tr>
+          <tr><th scope="row">Derivation</th><td><code>derive_key_pair</code> follows RFC 9180, including rejection sampling for the NIST curves; exhausting it yields <code>Derive_key_pair_failure</code>.</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="limits">Limits</h2>
+
+      <ul>
+        <li>A context's sequence number is 96 bits. When it is exhausted, seal and open return <code>Message_limit_reached</code> instead of reusing a nonce.</li>
+        <li>Plaintexts are bounded per AEAD, as tabulated above; longer input returns <code>Plaintext_too_long</code>.</li>
+        <li>A ciphertext shorter than the AEAD tag is rejected as <code>Open_error</code> without consuming a nonce.</li>
+        <li>Exports run from 0 to 255 times the KDF hash size, and never change sequence state.</li>
+      </ul>
+
+      <h2 id="versioning">Versioning</h2>
+
+      <p>
+        Wire behavior lives under <code>Hpke.Rfc9180</code> and will not be
+        changed by a future HPKE standard. A successor standard can be added as
+        a second versioned module, so applications choose when to move rather
+        than discovering that an upgrade changed what their peers see.
+      </p>
+    </main>
+
+    <footer>
+      <p>
+        <a href="index.html">overview</a> &middot;
+        <a href="usage.html">usage</a> &middot;
+        <a href="security.html">security</a>
+      </p>
+    </footer>
+  </body>
+</html>
