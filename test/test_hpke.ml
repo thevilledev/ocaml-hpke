@@ -444,24 +444,51 @@ let malformed_inputs () =
     | Error _ -> ()
     | Ok _ -> Alcotest.failf "%s unexpectedly succeeded" label
   in
-  expect_error "short X25519 key" (Public_key.of_bytes ~kem:Kem.X25519 "x");
-  expect_error "compressed P-256 point"
-    (Public_key.of_bytes ~kem:Kem.P256 (String.make 65 '\002'));
-  expect_error "off-curve P-256 point"
-    (Public_key.of_bytes ~kem:Kem.P256 ("\004" ^ String.make 64 '\000'));
-  expect_error "zero P-256 scalar"
-    (Private_key.of_bytes ~kem:Kem.P256 (String.make 32 '\000'));
+  List.iter
+    (fun (name, kem) ->
+      let public_size = Kem.public_key_size kem in
+      expect_error
+        ("short " ^ name ^ " public key")
+        (Public_key.of_bytes ~kem (String.make (public_size - 1) '\000'));
+      expect_error
+        ("invalid-prefix " ^ name ^ " point")
+        (Public_key.of_bytes ~kem
+           ("\002" ^ String.make (public_size - 1) '\000'));
+      expect_error
+        ("off-curve " ^ name ^ " point")
+        (Public_key.of_bytes ~kem
+           ("\004" ^ String.make (public_size - 1) '\000'));
+      expect_error
+        ("zero " ^ name ^ " scalar")
+        (Private_key.of_bytes ~kem
+           (String.make (Kem.private_key_size kem) '\000')))
+    [ ("P-256", Kem.P256); ("P-384", Kem.P384); ("P-521", Kem.P521) ];
+  expect_error "short X25519 public key"
+    (Public_key.of_bytes ~kem:Kem.X25519 "x");
+  expect_error "short X25519 private key"
+    (Private_key.of_bytes ~kem:Kem.X25519 "x");
   expect_error "short PSK" (Psk.create ~secret:(String.make 31 'p') ~id:"id");
   expect_error "empty PSK id" (Psk.create ~secret:(String.make 32 'p') ~id:"");
   let generator = rng () in
-  let _, low_order = ok (generate_key_pair ~rng:generator Kem.X25519) in
-  ignore low_order;
-  let zero_public =
-    ok (Public_key.of_bytes ~kem:Kem.X25519 (String.make 32 '\000'))
+  let recipient, _ = ok (generate_key_pair ~rng:generator Kem.X25519) in
+  let low_order_encodings =
+    [ String.make 32 '\000'; "\001" ^ String.make 31 '\000' ]
   in
-  expect_error "low-order X25519 public key"
-    (Rfc9180.setup_base_sender ~rng:generator x25519_aes_suite
-       ~recipient:zero_public ~info:"")
+  List.iteri
+    (fun index encoding ->
+      let public = ok (Public_key.of_bytes ~kem:Kem.X25519 encoding) in
+      expect_error
+        (Format.sprintf "low-order X25519 public key %d" index)
+        (Rfc9180.setup_base_sender ~rng:generator x25519_aes_suite
+           ~recipient:public ~info:"");
+      expect_error
+        (Format.sprintf "low-order X25519 encapsulation %d" index)
+        (Rfc9180.setup_base_receiver x25519_aes_suite ~recipient
+           ~encapsulated_key:encoding ~info:""))
+    low_order_encodings;
+  expect_error "short X25519 encapsulation"
+    (Rfc9180.setup_base_receiver x25519_aes_suite ~recipient
+       ~encapsulated_key:(String.make 31 '\000') ~info:"")
 
 let normalized_single_shot_error () =
   let generator = rng () in
@@ -482,13 +509,6 @@ let normalized_single_shot_error () =
 
 let adversarial_mismatches () =
   let generator = rng () in
-  let recipient, public = ok (generate_key_pair ~rng:generator Kem.X25519) in
-  let other_recipient, _ = ok (generate_key_pair ~rng:generator Kem.X25519) in
-  let sealed =
-    ok
-      (Rfc9180.seal_base ~rng:generator x25519_aes_suite ~recipient:public
-         ~info:"bound-info" ~aad:"bound-aad" ~plaintext:"bound-message")
-  in
   let expect_open_error label result =
     match result with
     | Error Error.Open_error -> ()
@@ -496,36 +516,90 @@ let adversarial_mismatches () =
         Alcotest.failf "%s returned %s" label (error_to_string error)
     | Ok _ -> Alcotest.failf "%s unexpectedly opened" label
   in
-  expect_open_error "wrong recipient"
-    (Rfc9180.open_base x25519_aes_suite ~recipient:other_recipient
-       ~info:"bound-info" ~aad:"bound-aad" ~ciphertext:sealed);
-  expect_open_error "wrong AAD"
-    (Rfc9180.open_base x25519_aes_suite ~recipient ~info:"bound-info"
-       ~aad:"wrong-aad" ~ciphertext:sealed);
-  let other_suite =
-    Suite.create ~kem:Kem.X25519 ~kdf:Kdf.Hkdf_sha512 ~aead:Aead.Aes_128_gcm
+  let cases =
+    [
+      ( "P-256/AES-128",
+        Kem.P256,
+        Kdf.Hkdf_sha256,
+        Aead.Aes_128_gcm,
+        Aead.Chacha20_poly1305 );
+      ( "P-384/AES-256",
+        Kem.P384,
+        Kdf.Hkdf_sha384,
+        Aead.Aes_256_gcm,
+        Aead.Aes_128_gcm );
+      ( "P-521/ChaCha",
+        Kem.P521,
+        Kdf.Hkdf_sha512,
+        Aead.Chacha20_poly1305,
+        Aead.Aes_256_gcm );
+      ( "X25519/ChaCha",
+        Kem.X25519,
+        Kdf.Hkdf_sha256,
+        Aead.Chacha20_poly1305,
+        Aead.Aes_128_gcm );
+    ]
   in
-  expect_open_error "wrong suite"
-    (Rfc9180.open_base other_suite ~recipient ~info:"bound-info"
-       ~aad:"bound-aad" ~ciphertext:sealed);
-  let truncated =
-    { sealed with ciphertext = String.sub sealed.ciphertext 0 15 }
-  in
-  expect_open_error "truncated ciphertext"
-    (Rfc9180.open_base x25519_aes_suite ~recipient ~info:"bound-info"
-       ~aad:"bound-aad" ~ciphertext:truncated);
-  let psk = ok (Psk.create ~secret:(String.make 32 '\x11') ~id:"psk") in
-  let wrong_psk =
-    ok (Psk.create ~secret:(String.make 32 '\x12') ~id:"other-psk")
-  in
-  let sealed_psk =
-    ok
-      (Rfc9180.seal_psk ~rng:generator x25519_aes_suite ~recipient:public ~psk
-         ~info:"psk-info" ~aad:"" ~plaintext:"psk-message")
-  in
-  expect_open_error "wrong PSK"
-    (Rfc9180.open_psk x25519_aes_suite ~recipient ~psk:wrong_psk
-       ~info:"psk-info" ~aad:"" ~ciphertext:sealed_psk);
+  List.iter
+    (fun (name, kem, kdf, aead, other_aead) ->
+      let suite = Suite.create ~kem ~kdf ~aead in
+      let other_suite = Suite.create ~kem ~kdf ~aead:other_aead in
+      let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+      let other_recipient, _ = ok (generate_key_pair ~rng:generator kem) in
+      let sealed =
+        ok
+          (Rfc9180.seal_base ~rng:generator suite ~recipient:public
+             ~info:"bound-info" ~aad:"bound-aad" ~plaintext:"bound-message")
+      in
+      expect_open_error
+        (name ^ " wrong recipient")
+        (Rfc9180.open_base suite ~recipient:other_recipient ~info:"bound-info"
+           ~aad:"bound-aad" ~ciphertext:sealed);
+      expect_open_error (name ^ " wrong info")
+        (Rfc9180.open_base suite ~recipient ~info:"wrong-info" ~aad:"bound-aad"
+           ~ciphertext:sealed);
+      expect_open_error (name ^ " wrong AAD")
+        (Rfc9180.open_base suite ~recipient ~info:"bound-info" ~aad:"wrong-aad"
+           ~ciphertext:sealed);
+      expect_open_error (name ^ " wrong suite")
+        (Rfc9180.open_base other_suite ~recipient ~info:"bound-info"
+           ~aad:"bound-aad" ~ciphertext:sealed);
+      let tampered_bytes = Bytes.of_string sealed.ciphertext in
+      let last = Bytes.length tampered_bytes - 1 in
+      Bytes.set_uint8 tampered_bytes last
+        (Bytes.get_uint8 tampered_bytes last lxor 1);
+      let tampered =
+        { sealed with ciphertext = Bytes.unsafe_to_string tampered_bytes }
+      in
+      expect_open_error
+        (name ^ " tampered ciphertext")
+        (Rfc9180.open_base suite ~recipient ~info:"bound-info" ~aad:"bound-aad"
+           ~ciphertext:tampered);
+      let truncated =
+        {
+          sealed with
+          ciphertext =
+            String.sub sealed.ciphertext 0 (String.length sealed.ciphertext - 1);
+        }
+      in
+      expect_open_error
+        (name ^ " truncated ciphertext")
+        (Rfc9180.open_base suite ~recipient ~info:"bound-info" ~aad:"bound-aad"
+           ~ciphertext:truncated);
+      let psk = ok (Psk.create ~secret:(String.make 32 '\x11') ~id:"psk") in
+      let wrong_psk =
+        ok (Psk.create ~secret:(String.make 32 '\x12') ~id:"other-psk")
+      in
+      let sealed_psk =
+        ok
+          (Rfc9180.seal_psk ~rng:generator suite ~recipient:public ~psk
+             ~info:"psk-info" ~aad:"psk-aad" ~plaintext:"psk-message")
+      in
+      expect_open_error (name ^ " wrong PSK")
+        (Rfc9180.open_psk suite ~recipient ~psk:wrong_psk ~info:"psk-info"
+           ~aad:"psk-aad" ~ciphertext:sealed_psk))
+    cases;
+  let recipient, _ = ok (generate_key_pair ~rng:generator Kem.X25519) in
   let p256_suite =
     Suite.create ~kem:Kem.P256 ~kdf:Kdf.Hkdf_sha256 ~aead:Aead.Aes_128_gcm
   in

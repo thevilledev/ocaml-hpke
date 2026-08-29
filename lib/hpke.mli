@@ -150,8 +150,10 @@ module Rfc9180 : sig
       aad:string ->
       ciphertext:string ->
       (string, Error.t) result
-    (** Authenticate and decrypt using the next context nonce. Authentication
-        failure does not advance sequence state. *)
+    (** Authenticate and decrypt using the next context nonce. Successful calls
+        advance exactly once. Authentication failure does not advance sequence
+        state. Concurrent calls return {!Error.Concurrent_use} from one
+        participant before it performs cryptography. *)
 
     val export : _ t -> context:string -> length:int -> (string, Error.t) result
     (** Export [length] bytes without changing message sequence state. *)
