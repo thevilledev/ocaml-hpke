@@ -326,15 +326,17 @@ let go_p384_differential_fixture () =
   let suite =
     Suite.create ~kem:Kem.P384 ~kdf:Kdf.Hkdf_sha384 ~aead:Aead.Aes_256_gcm
   in
-  let recipient =
-    ok
-      (Private_key.of_bytes ~kem:Kem.P384
-         (hex
-            "826db63209d0586a4db99b8e8ba1094ee2baf43c47b4eb79a79f81f80dfcab5dd85d07feea65cb18fc07dee76cc765dc"))
+  let expected_private =
+    "826db63209d0586a4db99b8e8ba1094ee2baf43c47b4eb79a79f81f80dfcab5dd85d07feea65cb18fc07dee76cc765dc"
   in
+  let recipient, derived_public =
+    ok (derive_key_pair Kem.P384 ~ikm:(String.make 48 '\x42'))
+  in
+  check_hex "Go P-384 recipient private key" expected_private
+    (Private_key.to_bytes recipient);
   check_hex "Go P-384 recipient public key"
     "046c4b4f33950fcf318da856fae44b1889ca66783421aa1a557051cfaa4eb33d114b4dced6cbbf4dd13a72bfd8c3e5afe5d3c1437453ed8b02affd37c74817e7bc045ad2d03080aadd116c7bc8a1c965175074f98c23a755ef91c4e9f4a3a80b7e"
-    (Public_key.to_bytes (Private_key.public_key recipient));
+    (Public_key.to_bytes derived_public);
   let context =
     ok
       (Rfc9180.setup_base_receiver suite ~recipient
