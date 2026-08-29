@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="The hpke security model: what the API makes hard to misuse, what it does not defend against, the test evidence behind it, and how to report a vulnerability.">
+    <meta name="theme-color" content="#ffffff">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="hpke security model">
+    <meta property="og:description" content="Misuse resistance, known limits, test-vector provenance, and reporting.">
+    <meta property="og:url" content="https://ville.dev/ocaml-hpke/security.html">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="hpke security model">
+    <meta name="twitter:description" content="Misuse resistance, known limits, test-vector provenance, and reporting.">
+    <link rel="canonical" href="https://ville.dev/ocaml-hpke/security.html">
+    <link rel="stylesheet" href="styles.css">
+    <title>hpke security model</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <nav class="top" aria-label="Primary navigation">
+      [ <a href="index.html">overview</a> |
+      <a href="usage.html">usage</a> |
+      <a href="suites.html">suites</a> |
+      security |
+      <a href="development.html">dev</a> |
+      <a href="https://github.com/thevilledev/ocaml-hpke">source</a> ]
+    </nav>
+
+    <main id="content">
+      <h1>Security</h1>
+
+      <div class="notice">
+        <p>
+          <strong>No released version is currently supported for production
+          use.</strong> The <code>0.1.x</code> series is for interoperability
+          review and has not received an independent cryptographic audit.
+          Security fixes land on the latest <code>0.1.x</code> release until a
+          stable policy is published with <code>1.0.0</code>.
+        </p>
+      </div>
+
+      <p>
+        HPKE is easy to implement and easy to misuse. The parts of this library
+        that are not RFC 9180 exist to make the second harder: what the type
+        system can prevent, it prevents; what it cannot, it reports as an error
+        rather than guessing.
+      </p>
+
+      <h2 id="resistance">What the API makes hard</h2>
+
+      <table>
+        <caption>Misuse resistance by construction</caption>
+        <tbody>
+          <tr><th scope="row">Secrets are abstract</th><td>Private keys, PSKs, and contexts are abstract types with no printer and no equality function. There is no convenient way to log a secret or compare one in variable time.</td></tr>
+          <tr><th scope="row">Export-only cannot encrypt</th><td>A suite carries a capability parameter, so an export-only suite passed to <code>seal</code> is a compile error rather than a run-time surprise.</td></tr>
+          <tr><th scope="row">Roles are separate</th><td>A sender context only seals and a receiver context only opens, so a context cannot be reused in the wrong direction.</td></tr>
+          <tr><th scope="row">Randomness is explicit</th><td>There is no ambient generator to fall back on. A test generator cannot silently become the production one.</td></tr>
+          <tr><th scope="row">Registries are closed</th><td>Algorithm identifiers are variants. Unknown codepoints are unrepresentable; <code>of_int</code> rejects them at the boundary.</td></tr>
+          <tr><th scope="row">One nonce per success</th><td>A successful seal or open advances the sequence exactly once, a failed open does not advance it at all, and exhaustion returns <code>Message_limit_reached</code> instead of wrapping.</td></tr>
+          <tr><th scope="row">Contention is detected</th><td>State-changing operations take an atomic guard. The losing caller gets <code>Concurrent_use</code> before any cryptography is performed, so no nonce is consumed.</td></tr>
+          <tr><th scope="row">Scalars compare in constant time</th><td>NIST private-scalar range checks go through <code>eqaf</code>.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="normalization">Error normalization</h3>
+
+      <p>
+        At protocol boundaries, <code>open_base</code> and
+        <code>open_psk</code> collapse every peer-controlled failure —
+        malformed encapsulation, decapsulation failure, AEAD authentication
+        failure — into a single <code>Open_error</code>. An attacker who can
+        submit ciphertexts learns only that the open failed.
+      </p>
+
+      <p>
+        <code>Key_mismatch</code> is the deliberate exception: a key whose KEM
+        differs from the suite's is a local configuration mistake, not something
+        a peer can provoke, so it stays distinguishable and debuggable. The
+        context-level <code>setup_base_receiver</code> likewise reports
+        malformed encapsulations structurally, because at that level the caller
+        is assumed to be diagnosing its own inputs.
+      </p>
+
+      <h2 id="limits">What it does not defend against</h2>
+
+      <ul>
+        <li><strong>Audit.</strong> No independent cryptographic review has been performed.</li>
+        <li><strong>Zeroization.</strong> OCaml's garbage collector cannot guarantee that key material is erased. Processes holding long-lived secrets should minimize retention and consider process isolation appropriate to their threat model.</li>
+        <li><strong>Message loss and reordering.</strong> HPKE contexts do not recover from either. A stream that skips a message cannot be resynchronized; prefer the single-shot API at protocol boundaries.</li>
+        <li><strong>PSK entropy.</strong> <code>Psk.create</code> enforces a 32-byte minimum. No length check can establish that a secret is unpredictable.</li>
+        <li><strong>Primitive side channels.</strong> The timing behavior of the curve, hash, and AEAD implementations is Mirage Crypto's and Digestif's responsibility, not this library's.</li>
+        <li><strong>Key management.</strong> Storage, distribution, rotation, and revocation are out of scope. So is transport framing.</li>
+      </ul>
+
+      <h2 id="assurance">Assurance</h2>
+
+      <p>
+        Interoperability is claimed only where a pinned, citable vector backs
+        it. The fixtures are committed, and their provenance is recorded in
+        <a href="https://github.com/thevilledev/ocaml-hpke/blob/main/test-vectors/PROVENANCE.md"><code>test-vectors/PROVENANCE.md</code></a>.
+      </p>
+
+      <div class="table-scroll">
+        <table>
+          <caption>Test evidence</caption>
+          <thead><tr><th scope="col">Source</th><th scope="col">Covers</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><a href="https://www.rfc-editor.org/rfc/rfc9180.html">RFC 9180</a> Appendix A, pinned at CFRG commit <code>5f503c5</code></td>
+              <td>A.1.1 X25519/HKDF-SHA256/AES-128-GCM Base, A.1.2 the same suite in PSK mode, A.2.1 X25519/HKDF-SHA256/ChaCha20-Poly1305 Base.</td>
+            </tr>
+            <tr>
+              <td><code>draft-ietf-hpke-hpke-04</code>, pinned at HPKE working-group commit <code>4abc37e</code></td>
+              <td>Appendix C.8 export-only, and Appendix D vectors for P-256 rejection sampling, empty inputs, embedded zero bytes, and empty <code>info</code>.</td>
+            </tr>
+            <tr>
+              <td>Go 1.26.5 standard-library <code>crypto/hpke</code></td>
+              <td>An independently generated P-384/HKDF-SHA384/AES-256-GCM fixture. The generator is kept at <code>tools/differential/go/main.go</code>; its outputs are pinned in the OCaml test.</td>
+            </tr>
+            <tr>
+              <td>Suite coverage</td>
+              <td>All 36 Base combinations round-tripped, PSK across every KEM, and sender/receiver agreement on export-only suites.</td>
+            </tr>
+            <tr>
+              <td>Invariants</td>
+              <td>A failed open retains sequence state; malformed encodings, off-curve points, invalid scalars, low-order X25519 values, and tampering are rejected; single-shot errors are normalized; suite and key mismatches are reported.</td>
+            </tr>
+            <tr>
+              <td>Property tests (QCheck)</td>
+              <td>Round-trip correctness, and totality on peer-controlled input — no input shape escapes as an exception.</td>
+            </tr>
+            <tr>
+              <td>Fuzzing (Crowbar)</td>
+              <td>Key parsing across all four KEMs, receiver setup on arbitrary encapsulations, and opening arbitrary ciphertexts. CI runs 1,000 iterations per push.</td>
+            </tr>
+            <tr>
+              <td>Concurrency</td>
+              <td>Two OCaml 5 domains contend on one sender context until the guard fires. The surviving ciphertext must then open on a fresh receiver, which holds only if the losing call consumed nothing.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Vectors are never silently refreshed from a moving branch. Changing a
+        fixture requires citing a standards revision and an immutable source
+        commit.
+      </p>
+
+      <h2 id="cautions">Operational cautions</h2>
+
+      <ul>
+        <li>Initialize a cryptographically secure Mirage Crypto RNG and pass it explicitly. Deterministic or test generators must never be used in production.</li>
+        <li>Serialize access to a context at the application layer. <code>Concurrent_use</code> means no cryptography was performed by that call, but retrying still requires knowing which operation owns the next sequence number.</li>
+        <li>Treat <code>Open_error</code> uniformly at protocol boundaries. Do not build an oracle by translating lower-level setup errors into distinguishable responses.</li>
+        <li>Do not log private-key or PSK byte strings. The public API intentionally offers no secret printers or equality helpers.</li>
+        <li>Assume secrets may persist in memory after use, and design retention accordingly.</li>
+      </ul>
+
+      <h2 id="reporting">Reporting a vulnerability</h2>
+
+      <p>
+        Do not open a public issue for a suspected vulnerability. Use GitHub's
+        private security-advisory flow on the
+        <a href="https://github.com/thevilledev/ocaml-hpke">repository</a>.
+        Include the affected version or commit, the suite and mode, a minimal
+        reproduction, and your assessment of confidentiality and nonce-reuse
+        impact. Maintainers aim to acknowledge a report within seven days and to
+        coordinate disclosure after a fix is available.
+      </p>
+
+      <p>
+        The full policy is in
+        <a href="https://github.com/thevilledev/ocaml-hpke/blob/main/SECURITY.md"><code>SECURITY.md</code></a>.
+      </p>
+    </main>
+
+    <footer>
+      <p>
+        <a href="index.html">overview</a> &middot;
+        <a href="suites.html">suites</a> &middot;
+        <a href="development.html">development</a>
+      </p>
+    </footer>
+  </body>
+</html>

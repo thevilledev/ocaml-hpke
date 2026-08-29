@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Install hpke and use RFC 9180 Base and PSK modes: keys, single-shot messages, stateful contexts, and secret export.">
+    <meta name="theme-color" content="#ffffff">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Using hpke">
+    <meta property="og:description" content="Keys, single-shot messages, stateful contexts, secret export, and errors.">
+    <meta property="og:url" content="https://ville.dev/ocaml-hpke/usage.html">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Using hpke">
+    <meta name="twitter:description" content="Keys, single-shot messages, stateful contexts, secret export, and errors.">
+    <link rel="canonical" href="https://ville.dev/ocaml-hpke/usage.html">
+    <link rel="stylesheet" href="styles.css">
+    <title>Using hpke</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <nav class="top" aria-label="Primary navigation">
+      [ <a href="index.html">overview</a> |
+      usage |
+      <a href="suites.html">suites</a> |
+      <a href="security.html">security</a> |
+      <a href="development.html">dev</a> |
+      <a href="https://github.com/thevilledev/ocaml-hpke">source</a> ]
+    </nav>
+
+    <main id="content">
+      <h1>Usage</h1>
+
+      <p>
+        Every entry point returns a <code>result</code>. The examples below use
+        the binding operator to keep that plumbing out of the way:
+      </p>
+
+      <pre><code>open Hpke
+
+let ( let* ) = Result.bind</code></pre>
+
+      <h2 id="install">Install</h2>
+
+      <pre><code>opam pin add hpke \
+  git+https://github.com/thevilledev/ocaml-hpke.git#v0.1.0</code></pre>
+
+      <p>
+        The package is not in opam-repository yet, so install it from the
+        tagged source. <code>opam install hpke</code> replaces the pin once it
+        is published.
+      </p>
+
+      <p>Then depend on the library from dune:</p>
+
+      <pre><code>(executable
+ (name main)
+ (libraries hpke mirage-crypto-rng.unix))</code></pre>
+
+      <p>
+        OCaml 4.14+ and dune 3.12+ are required. The package pulls in Mirage
+        Crypto, Digestif, <code>kdf</code>, and <code>eqaf</code>; it contains no
+        primitive implementations of its own.
+      </p>
+
+      <h2 id="randomness">Randomness</h2>
+
+      <p>
+        Randomness is an explicit argument. Seed a generator once at startup and
+        pass it to every operation that needs one:
+      </p>
+
+      <pre><code>Mirage_crypto_rng_unix.use_default ();
+let rng = Mirage_crypto_rng.default_generator () in
+...</code></pre>
+
+      <p>
+        Only key generation and the sender side — context setup and the single-shot
+        seals — take <code>~rng</code>. Receiving is deterministic, and so is <code>derive_key_pair</code> — which is the
+        point of it. A deterministic or test generator must never reach
+        production sealing: see
+        <a href="security.html#cautions">operational cautions</a>.
+      </p>
+
+      <h2 id="keys">Keys</h2>
+
+      <p>Generate a pair, or derive one deterministically from input keying material:</p>
+
+      <pre><code>let* private_key, public_key =
+  generate_key_pair ~rng Kem.X25519
+in
+let* fixed_private, fixed_public =
+  derive_key_pair Kem.P256 ~ikm
+in
+...</code></pre>
+
+      <p>Parse a peer's key from the wire, and serialize your own:</p>
+
+      <pre><code>let* peer = Public_key.of_bytes ~kem:Kem.X25519 encoded in
+let bytes = Public_key.to_bytes peer in
+...</code></pre>
+
+      <p>
+        Keys are abstract and tagged with their KEM, so a P-256 key cannot be
+        handed to an X25519 suite by accident; the mismatch is reported as
+        <code>Key_mismatch</code> rather than producing a wrong answer. Parsing
+        enforces the exact encoded length, uncompressed SEC1 form for the NIST
+        curves, and a scalar in range for private keys. X25519 private keys are
+        clamped on parse and on serialization; low-order X25519 public values
+        are rejected when the key is used.
+      </p>
+
+      <h2 id="one-message">One message</h2>
+
+      <p>
+        <code>seal_base</code> establishes a context, seals a single message,
+        and discards the context:
+      </p>
+
+      <pre><code>let suite =
+  Suite.create ~kem:Kem.X25519 ~kdf:Kdf.Hkdf_sha256
+    ~aead:Aead.Chacha20_poly1305
+
+let send ~rng ~recipient ~plaintext =
+  Rfc9180.seal_base ~rng suite ~recipient ~info:"application-v1"
+    ~aad:"message-metadata" ~plaintext
+
+let receive ~recipient ~ciphertext =
+  Rfc9180.open_base suite ~recipient ~info:"application-v1"
+    ~aad:"message-metadata" ~ciphertext</code></pre>
+
+      <p>
+        <code>info</code> binds the context to an application role or version;
+        <code>aad</code> binds one message to its metadata. Both must match
+        exactly on both sides, and neither is transmitted by the library.
+      </p>
+
+      <p>
+        The success value is a record with two separate fields.
+        <code>encapsulated_key</code> is the KEM output the recipient needs to
+        decapsulate; <code>ciphertext</code> is the sealed message:
+      </p>
+
+      <pre><code>let* { Rfc9180.encapsulated_key; ciphertext } =
+  send ~rng ~recipient ~plaintext
+in
+...</code></pre>
+
+      <p>
+        That record is not a wire encoding. Applications frame the two strings
+        themselves — and should bind the framing to their protocol context
+        through <code>info</code> and <code>aad</code> rather than trusting
+        length prefixes alone.
+      </p>
+
+      <h2 id="psk">Pre-shared keys</h2>
+
+      <p>
+        PSK mode mixes an out-of-band secret into the key schedule, so a
+        recipient private key alone is not enough to open the message:
+      </p>
+
+      <pre><code>let* psk = Psk.create ~secret:tenant_secret ~id:"tenant-42" in
+let* sealed =
+  Rfc9180.seal_psk ~rng suite ~recipient:recipient_public ~psk
+    ~info:"application-v1" ~aad:"message-metadata"
+    ~plaintext:"secret payload"
+in
+Rfc9180.open_psk suite ~recipient:recipient_private ~psk
+  ~info:"application-v1" ~aad:"message-metadata"
+  ~ciphertext:sealed</code></pre>
+
+      <p>
+        <code>Psk.create</code> rejects secrets shorter than 32 bytes and empty
+        identifiers. That is a length check only: it cannot establish that a
+        secret has adequate entropy, so derive PSKs from a real key-agreement or
+        key-derivation step rather than from a passphrase.
+      </p>
+
+      <h2 id="contexts">Many messages</h2>
+
+      <p>
+        When one encapsulation should carry a stream of messages, set up the
+        context yourself. The sender gets both the encapsulated key to send and
+        the context to keep:
+      </p>
+
+      <pre><code>let send_all ~rng ~recipient messages =
+  let* { Rfc9180.encapsulated_key; context } =
+    Rfc9180.setup_base_sender ~rng suite ~recipient
+      ~info:"stream-v1"
+  in
+  let rec seal_each sealed = function
+    | [] -&gt; Ok (encapsulated_key, List.rev sealed)
+    | plaintext :: rest -&gt;
+        let* ciphertext =
+          Rfc9180.Sender.seal context ~aad:"" ~plaintext
+        in
+        seal_each (ciphertext :: sealed) rest
+  in
+  seal_each [] messages</code></pre>
+
+      <pre><code>let receive_all ~recipient ~encapsulated_key ciphertexts =
+  let* context =
+    Rfc9180.setup_base_receiver suite ~recipient
+      ~encapsulated_key ~info:"stream-v1"
+  in
+  let rec open_each opened = function
+    | [] -&gt; Ok (List.rev opened)
+    | ciphertext :: rest -&gt;
+        let* plaintext =
+          Rfc9180.Receiver.open_ context ~aad:"" ~ciphertext
+        in
+        open_each (plaintext :: opened) rest
+  in
+  open_each [] ciphertexts</code></pre>
+
+      <table>
+        <caption>Context rules</caption>
+        <tbody>
+          <tr><th scope="row">Roles are separate</th><td>A <code>Sender.t</code> only seals; a <code>Receiver.t</code> only opens. There is no type that does both.</td></tr>
+          <tr><th scope="row">Order is fixed</th><td>Messages must be opened in the order they were sealed. HPKE contexts do not recover from loss or reordering.</td></tr>
+          <tr><th scope="row">One nonce per success</th><td>A successful seal or open advances the sequence exactly once.</td></tr>
+          <tr><th scope="row">Failure holds still</th><td>A failed open does not advance the sequence, so a rejected message does not desynchronize the stream.</td></tr>
+          <tr><th scope="row">Aliases are not copies</th><td>Binding a context to a second name refers to the same mutable state.</td></tr>
+          <tr><th scope="row">Exhaustion is an error</th><td>When the 96-bit sequence is exhausted, further operations return <code>Message_limit_reached</code> instead of reusing a nonce.</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        Contexts are single-threaded by design. If two domains or threads
+        attempt a state-changing operation on the same context, one of them
+        receives <code>Concurrent_use</code> before any cryptography is
+        performed. Do not blindly retry: the caller must decide which operation
+        owns the next sequence number, which is an application-level ordering
+        question the library cannot answer.
+      </p>
+
+      <p>
+        For protocol boundaries, prefer the single-shot functions. They
+        normalize peer-controlled decapsulation and authentication failures to a
+        single <code>Open_error</code>, while the context-level setup reports
+        malformed encapsulations structurally.
+      </p>
+
+      <h2 id="export">Secret export</h2>
+
+      <p>
+        Both context types export secrets for other protocols without touching
+        message sequence state:
+      </p>
+
+      <pre><code>let* traffic_key =
+  Rfc9180.Sender.export context ~context:"traffic key" ~length:32
+in
+...</code></pre>
+
+      <p>
+        When a suite is only ever used this way, build it with
+        <code>Suite.export_only</code>. It carries no AEAD, and its capability
+        parameter means <code>Sender.seal</code> will not accept it — the
+        program does not compile rather than failing at run time:
+      </p>
+
+      <pre><code>let exporter =
+  Suite.export_only ~kem:Kem.X25519 ~kdf:Kdf.Hkdf_sha256
+
+let derive ~rng ~recipient =
+  let* { Rfc9180.encapsulated_key; context } =
+    Rfc9180.setup_base_sender ~rng exporter ~recipient
+      ~info:"exporter-v1"
+  in
+  let* key =
+    Rfc9180.Sender.export context ~context:"client write"
+      ~length:32
+  in
+  Ok (encapsulated_key, key)</code></pre>
+
+      <p>
+        Export lengths run from 0 to 255 times the KDF hash size; outside that
+        range the call returns <code>Export_length_out_of_range</code>. Exact
+        limits per KDF are on the <a href="suites.html#kdf">suites</a> page.
+      </p>
+
+      <h2 id="errors">Errors</h2>
+
+      <p>
+        <code>Error.t</code> is a closed variant, and <code>Error.pp</code>
+        prints a class of failure. Error values never contain key material.
+      </p>
+
+      <div class="table-scroll">
+        <table>
+          <caption>Error constructors</caption>
+          <thead><tr><th scope="col">Constructor</th><th scope="col">Returned when</th></tr></thead>
+          <tbody>
+            <tr><td><code>Unsupported_algorithm</code></td><td>An integer codepoint outside the closed registry reached <code>of_int</code>.</td></tr>
+            <tr><td><code>Invalid_public_key</code></td><td>Wrong encoded length, a non-uncompressed SEC1 point, or a point off the curve.</td></tr>
+            <tr><td><code>Invalid_private_key</code></td><td>Wrong encoded length, or a scalar outside the valid range.</td></tr>
+            <tr><td><code>Invalid_encapsulation</code></td><td>A malformed encapsulated key at context-level receiver setup.</td></tr>
+            <tr><td><code>Key_mismatch</code></td><td>A key's KEM differs from the suite's KEM.</td></tr>
+            <tr><td><code>Derive_key_pair_failure</code></td><td>Rejection sampling did not find a valid scalar for a NIST curve.</td></tr>
+            <tr><td><code>Invalid_psk</code></td><td>A secret shorter than 32 bytes, or an empty identifier.</td></tr>
+            <tr><td><code>Invalid_length</code></td><td>Deterministic derivation was given input a primitive refused by length.</td></tr>
+            <tr><td><code>Message_limit_reached</code></td><td>The context's 96-bit sequence counter is exhausted.</td></tr>
+            <tr><td><code>Plaintext_too_long</code></td><td>The plaintext exceeds the AEAD's limit.</td></tr>
+            <tr><td><code>Export_length_out_of_range</code></td><td>An export length is negative or above 255 times the hash size.</td></tr>
+            <tr><td><code>Concurrent_use</code></td><td>Another domain or thread held the context. No cryptography was performed by this call.</td></tr>
+            <tr><td><code>Open_error</code></td><td>A single-shot open failed. Decapsulation and authentication failures are deliberately indistinguishable.</td></tr>
+            <tr><td><code>Internal_error</code></td><td>A primitive failed unexpectedly.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Do not translate these into distinguishable protocol responses. Doing so
+        rebuilds the oracle that <code>Open_error</code> exists to remove; the
+        <a href="security.html">security model</a> covers the reasoning.
+      </p>
+    </main>
+
+    <footer>
+      <p>
+        <a href="index.html">overview</a> &middot;
+        <a href="suites.html">suites</a> &middot;
+        <a href="https://github.com/thevilledev/ocaml-hpke/issues">issues</a>
+      </p>
+    </footer>
+  </body>
+</html>

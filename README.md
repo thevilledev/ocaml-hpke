@@ -21,6 +21,11 @@ Once `0.1.1` is available from the OPAM repository:
 opam install hpke
 ```
 
+## Documentation
+
+Usage, ciphersuites, the security model, and development notes:
+[ville.dev/ocaml-hpke](https://ville.dev/ocaml-hpke/)
+
 ## Supported algorithms
 
 | Component | Algorithms |
@@ -109,6 +114,9 @@ opam lint hpke.opam
 
 Official test-vector provenance is pinned in
 [test-vectors/PROVENANCE.md](test-vectors/PROVENANCE.md).
+
+See the [development guide](https://ville.dev/ocaml-hpke/development.html) for
+the project layout, CI matrix, and test-vector policy.
 
 ## Acknowledgments
 

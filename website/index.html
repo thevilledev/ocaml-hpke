@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="hpke is an idiomatic OCaml implementation of RFC 9180 Hybrid Public Key Encryption, offering Base and PSK modes on Mirage Crypto primitives."
+    >
+    <meta name="theme-color" content="#ffffff">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="hpke">
+    <meta
+      property="og:description"
+      content="RFC 9180 Hybrid Public Key Encryption for OCaml. Base and PSK modes, abstract keys, explicit randomness."
+    >
+    <meta property="og:url" content="https://ville.dev/ocaml-hpke/">
+    <meta property="og:image" content="https://ville.dev/ocaml-hpke/og.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="hpke — RFC 9180 Hybrid Public Key Encryption for OCaml">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="hpke">
+    <meta name="twitter:description" content="RFC 9180 Hybrid Public Key Encryption for OCaml. Base and PSK modes, abstract keys, explicit randomness.">
+    <meta name="twitter:image" content="https://ville.dev/ocaml-hpke/og.png">
+    <meta name="twitter:image:alt" content="hpke — RFC 9180 Hybrid Public Key Encryption for OCaml">
+    <link rel="canonical" href="https://ville.dev/ocaml-hpke/">
+    <link rel="stylesheet" href="styles.css">
+    <title>hpke: RFC 9180 Hybrid Public Key Encryption for OCaml</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+    <nav class="top" aria-label="Primary navigation">
+      [ overview |
+      <a href="usage.html">usage</a> |
+      <a href="suites.html">suites</a> |
+      <a href="security.html">security</a> |
+      <a href="development.html">dev</a> |
+      <a href="https://github.com/thevilledev/ocaml-hpke">source</a> ]
+    </nav>
+
+    <main id="content">
+      <svg class="diagram diagram-wide" viewBox="0 0 640 268" role="img"
+        aria-label="A sender encapsulates to the recipient public key, runs the HPKE key schedule, and seals a message. The encapsulated key and the ciphertext travel to the recipient, which decapsulates with its private key, runs the same key schedule, and opens the message.">
+        <defs>
+          <marker id="tip-w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0.5 L10 5 L0 9.5 Z" fill="currentColor"></path>
+          </marker>
+        </defs>
+
+        <text class="lbl" x="100" y="20">sender</text>
+        <rect class="box" x="25" y="30" width="150" height="32"></rect>
+        <text class="lbl" x="100" y="46" dy="0.35em">pkR</text>
+        <path class="flow" d="M100 62 L100 82" marker-end="url(#tip-w)"></path>
+        <rect class="box" x="25" y="84" width="150" height="32"></rect>
+        <text class="lbl" x="100" y="100" dy="0.35em">encap</text>
+        <path class="flow" d="M100 116 L100 148" marker-end="url(#tip-w)"></path>
+        <text class="cap start" x="108" y="137">shared secret</text>
+        <rect class="box box-key" x="25" y="150" width="150" height="32"></rect>
+        <text class="lbl" x="100" y="166" dy="0.35em">key schedule</text>
+        <path class="flow" d="M100 182 L100 202" marker-end="url(#tip-w)"></path>
+        <rect class="box" x="25" y="204" width="150" height="32"></rect>
+        <text class="lbl" x="100" y="220" dy="0.35em">seal</text>
+        <text class="cap" x="100" y="254">recipient public key</text>
+
+        <path class="flow" d="M180 100 L460 100" marker-end="url(#tip-w)"></path>
+        <text class="lbl" x="320" y="92">enc</text>
+        <path class="flow" d="M180 220 L460 220" marker-end="url(#tip-w)"></path>
+        <text class="lbl" x="320" y="212">ciphertext</text>
+
+        <text class="lbl" x="540" y="20">recipient</text>
+        <rect class="box" x="465" y="30" width="150" height="32"></rect>
+        <text class="lbl" x="540" y="46" dy="0.35em">skR</text>
+        <path class="flow" d="M540 62 L540 82" marker-end="url(#tip-w)"></path>
+        <rect class="box" x="465" y="84" width="150" height="32"></rect>
+        <text class="lbl" x="540" y="100" dy="0.35em">decap</text>
+        <path class="flow" d="M540 116 L540 148" marker-end="url(#tip-w)"></path>
+        <text class="cap start" x="548" y="137">same secret</text>
+        <rect class="box box-key" x="465" y="150" width="150" height="32"></rect>
+        <text class="lbl" x="540" y="166" dy="0.35em">key schedule</text>
+        <path class="flow" d="M540 182 L540 202" marker-end="url(#tip-w)"></path>
+        <rect class="box" x="465" y="204" width="150" height="32"></rect>
+        <text class="lbl" x="540" y="220" dy="0.35em">open</text>
+        <text class="cap" x="540" y="254">recipient private key</text>
+      </svg>
+
+      <svg class="diagram diagram-tall" viewBox="0 0 300 538" role="img"
+        aria-label="A sender encapsulates to the recipient public key, runs the HPKE key schedule, and seals a message. The encapsulated key and the ciphertext travel to the recipient, which decapsulates with its private key, runs the same key schedule, and opens the message.">
+        <defs>
+          <marker id="tip-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0.5 L10 5 L0 9.5 Z" fill="currentColor"></path>
+          </marker>
+        </defs>
+
+        <text class="lbl" x="150" y="16">sender</text>
+        <rect class="box" x="65" y="26" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="41" dy="0.35em">pkR</text>
+        <path class="flow" d="M150 56 L150 74" marker-end="url(#tip-t)"></path>
+        <rect class="box" x="65" y="76" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="91" dy="0.35em">encap</text>
+        <path class="flow" d="M150 106 L150 124" marker-end="url(#tip-t)"></path>
+        <rect class="box box-key" x="65" y="126" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="141" dy="0.35em">key schedule</text>
+        <path class="flow" d="M150 156 L150 174" marker-end="url(#tip-t)"></path>
+        <rect class="box" x="65" y="176" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="191" dy="0.35em">seal</text>
+        <text class="cap" x="150" y="222">recipient public key</text>
+
+        <path class="flow" d="M112 252 L112 298" marker-end="url(#tip-t)"></path>
+        <text class="lbl end" x="104" y="280">enc</text>
+        <path class="flow" d="M188 252 L188 298" marker-end="url(#tip-t)"></path>
+        <text class="lbl start" x="196" y="280">ciphertext</text>
+
+        <text class="lbl" x="150" y="318">recipient</text>
+        <rect class="box" x="65" y="328" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="343" dy="0.35em">skR</text>
+        <path class="flow" d="M150 358 L150 376" marker-end="url(#tip-t)"></path>
+        <rect class="box" x="65" y="378" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="393" dy="0.35em">decap</text>
+        <path class="flow" d="M150 408 L150 426" marker-end="url(#tip-t)"></path>
+        <rect class="box box-key" x="65" y="428" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="443" dy="0.35em">key schedule</text>
+        <path class="flow" d="M150 458 L150 476" marker-end="url(#tip-t)"></path>
+        <rect class="box" x="65" y="478" width="170" height="30"></rect>
+        <text class="lbl" x="150" y="493" dy="0.35em">open</text>
+        <text class="cap" x="150" y="526">recipient private key</text>
+      </svg>
+      <h1>hpke</h1>
+
+      <p>
+        An idiomatic OCaml implementation of Hybrid Public Key Encryption,
+        <a href="https://www.rfc-editor.org/rfc/rfc9180.html">RFC 9180</a>. Base
+        and PSK modes live under the explicitly versioned
+        <code>Hpke.Rfc9180</code> module; elliptic-curve, hash, and AEAD
+        primitives are delegated to
+        <a href="https://github.com/mirage/mirage-crypto">Mirage Crypto</a>,
+        <a href="https://github.com/mirage/digestif">Digestif</a>, and
+        <a href="https://github.com/mirage/kdf">kdf</a>.
+      </p>
+
+      <ul>
+        <li>36 encryption ciphersuites and 12 export-only suites, from a closed registry.</li>
+        <li>Secret keys and message contexts are abstract; a suite's capability keeps export-only suites out of <code>seal</code>.</li>
+        <li>Every operation returns a <code>result</code>. Peer-controlled failures at protocol boundaries normalize to one error.</li>
+        <li>Randomness is a parameter, never a global: the caller passes an explicit generator.</li>
+      </ul>
+
+      <div class="table-scroll">
+        <table>
+          <caption>Registry implemented</caption>
+          <thead>
+            <tr>
+              <th scope="col">Component</th>
+              <th scope="col">Algorithms</th>
+              <th scope="col" class="n">Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>KEM</td><td>DHKEM over P-256, P-384, P-521, X25519</td><td class="n">4</td></tr>
+            <tr><td>KDF</td><td>HKDF-SHA256, HKDF-SHA384, HKDF-SHA512</td><td class="n">3</td></tr>
+            <tr><td>AEAD</td><td>AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305</td><td class="n">3</td></tr>
+            <tr><td>Modes</td><td>Base, PSK</td><td class="n">2</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Every KEM/KDF/AEAD combination is exercised by the test suite, and
+        export-only operation is a separate suite type rather than a special
+        AEAD value. Codepoints, sizes, and deliberate omissions:
+        <a href="suites.html">suites</a>.
+      </p>
+
+      <div class="notice">
+        <p>
+          <strong>Release 0.1.0 is for interoperability review.</strong> It has
+          not received an independent cryptographic audit. Read the
+          <a href="security.html">security model</a> before using it with
+          sensitive data.
+        </p>
+      </div>
+
+      <table>
+        <caption>Current state</caption>
+        <tbody>
+          <tr><th scope="row">Release</th><td>0.1.0</td></tr>
+          <tr><th scope="row">OCaml</th><td>4.14 or newer</td></tr>
+          <tr><th scope="row">Dune</th><td>3.12 or newer</td></tr>
+          <tr><th scope="row">Modes</th><td>Base and PSK</td></tr>
+          <tr><th scope="row">Ciphersuites</th><td>36, plus 12 export-only</td></tr>
+          <tr><th scope="row">License</th><td>ISC</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="quick-start">Quick start</h2>
+
+      <pre><code>opam pin add hpke \
+  git+https://github.com/thevilledev/ocaml-hpke.git#v0.1.0</code></pre>
+
+      <p>
+        <code>opam install hpke</code> replaces the pin once the package is in
+        opam-repository.
+      </p>
+
+      <p>Depend on the library, and on a Unix RNG entry point for applications:</p>
+
+      <pre><code>(executable
+ (name main)
+ (libraries hpke mirage-crypto-rng.unix))</code></pre>
+
+      <p>Seal one message and open it again:</p>
+
+      <pre><code>open Hpke
+
+let () =
+  Mirage_crypto_rng_unix.use_default ();
+  let rng = Mirage_crypto_rng.default_generator () in
+  let suite =
+    Suite.create ~kem:Kem.X25519 ~kdf:Kdf.Hkdf_sha256
+      ~aead:Aead.Chacha20_poly1305
+  in
+  match generate_key_pair ~rng Kem.X25519 with
+  | Error error -&gt; Format.eprintf "keygen: %a@." Error.pp error
+  | Ok (private_key, public_key) -&gt; (
+      match
+        Rfc9180.seal_base ~rng suite ~recipient:public_key
+          ~info:"application-v1" ~aad:"message-metadata"
+          ~plaintext:"secret payload"
+      with
+      | Error error -&gt; Format.eprintf "seal: %a@." Error.pp error
+      | Ok ciphertext -&gt; (
+          match
+            Rfc9180.open_base suite ~recipient:private_key
+              ~info:"application-v1" ~aad:"message-metadata"
+              ~ciphertext
+          with
+          | Ok text -&gt; assert (String.equal text "secret payload")
+          | Error error -&gt;
+              Format.eprintf "open: %a@." Error.pp error))</code></pre>
+
+      <p>
+        The result carries <code>encapsulated_key</code> and
+        <code>ciphertext</code> as separate fields. The library does not invent
+        an application wire format: framing those two strings, and binding them
+        to the surrounding protocol, is the application's job.
+      </p>
+
+      <h2 id="choose-an-api">Choose an API</h2>
+
+      <dl>
+        <dt><strong>Single-shot</strong></dt>
+        <dd>Best default. <code>seal_base</code> and <code>open_base</code> establish a context, move one message, and discard it. Peer-controlled failures come back as <code>Open_error</code>.</dd>
+        <dt><strong>Stateful context</strong></dt>
+        <dd>Use <code>setup_base_sender</code> and <code>setup_base_receiver</code> when one encapsulation carries many messages. Each successful operation consumes exactly one nonce.</dd>
+        <dt><strong>Export-only</strong></dt>
+        <dd>Build a suite with <code>Suite.export_only</code> to derive keys for another protocol. Such a suite cannot be passed to <code>seal</code> — the type checker rejects it.</dd>
+      </dl>
+
+      <p>
+        Continue with <a href="usage.html">usage</a>, or read the
+        <a href="security.html">security model</a> for what this library
+        does and does not defend against.
+      </p>
+    </main>
+
+    <footer>
+      <p>
+        <a href="https://github.com/thevilledev/ocaml-hpke">github.com/thevilledev/ocaml-hpke</a>
+        &middot; <a href="https://github.com/thevilledev/ocaml-hpke/blob/main/CHANGES.md">changelog</a>
+        &middot; <a href="https://github.com/thevilledev/ocaml-hpke/issues">issues</a>
+      </p>
+    </footer>
+  </body>
+</html>
