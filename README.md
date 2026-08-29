@@ -9,9 +9,17 @@ elliptic-curve, hash, and AEAD primitives to Mirage Crypto, Digestif, and
 The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
 
-> **Release status:** `0.1.0` is for interoperability review. It has not
-> received an independent cryptographic audit. See [SECURITY.md](SECURITY.md)
-> before using it with sensitive data.
+> **Release status:** `0.1.1` is for interoperability review and is not
+> production-ready. It has not received an independent cryptographic audit.
+> See [SECURITY.md](SECURITY.md) before using it with sensitive data.
+
+## Installation
+
+Once `0.1.1` is available from the OPAM repository:
+
+```sh
+opam install hpke
+```
 
 ## Supported algorithms
 
@@ -22,10 +30,17 @@ library.
 | AEAD | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, export-only |
 | Modes | RFC 9180 Base and PSK |
 
-X448 is intentionally unsupported because there is no suitable maintained
-primitive in the selected OCaml backend. Auth and AuthPSK are intentionally not
-part of the initial surface. A successor standard can be added in a new
-versioned module without changing `Hpke.Rfc9180` wire behavior.
+| Feature scope | Status |
+| --- | --- |
+| RFC 9180 Base, PSK, export-only, and the algorithms above | Implemented |
+| Auth and AuthPSK modes | Deferred |
+| X448 | Deferred pending a suitable maintained OCaml primitive |
+| Post-quantum and hybrid KEMs | Deferred |
+| HPKE-bis or another successor standard | Deferred to a new versioned module |
+| Application wire framing | Deferred to applications |
+
+The deferred features are intentionally outside the first OPAM release. They
+do not change the wire behavior of `Hpke.Rfc9180`.
 
 ## Example
 

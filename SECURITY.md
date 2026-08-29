@@ -9,13 +9,12 @@ to the latest `0.1.x` release until a stable policy is published with `1.0.0`.
 ## Reporting a vulnerability
 
 Do not open a public issue for a suspected vulnerability. Use GitHub's private
-security-advisory reporting flow for this repository. Include the affected
-version or commit, suite and mode, a minimal reproduction, and your assessment
-of confidentiality and nonce-reuse impact. Maintainers should acknowledge a
-report within seven days and coordinate disclosure after a fix is available.
-
-Until a private reporting channel is configured on the final repository, do
-not publish the package as production-ready.
+[security-advisory reporting
+flow](https://github.com/thevilledev/ocaml-hpke/security/advisories/new) for this
+repository. Include the affected version or commit, suite and mode, a minimal
+reproduction, and your assessment of confidentiality and nonce-reuse impact.
+Maintainers should acknowledge a report within seven days and coordinate
+disclosure after a fix is available.
 
 ## Operational cautions
 
