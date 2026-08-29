@@ -376,7 +376,7 @@ module Suite = struct
     | Encryption suite -> suite.kdf
     | Export_only suite -> suite.kdf
 
-  let aead (Encryption suite) = suite.aead
+  let[@warning "-8"] aead (Encryption suite) = suite.aead
 
   let aead_id : type capability. capability t -> int = function
     | Encryption suite -> Aead.to_int suite.aead
