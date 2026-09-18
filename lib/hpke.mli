@@ -83,9 +83,19 @@ module Aead : sig
   val tag_size : id -> int
   (** [Nt], the authentication tag length in bytes. *)
 
+  type key
+  (** A key prepared for repeated use with one AEAD. Preparing an AES-GCM key
+      derives its GHASH tables, which without hardware support costs more than
+      sealing several kilobytes, so a protocol that seals many messages under
+      one key should prepare it once. Values are abstract and cannot be reliably
+      zeroized by the OCaml garbage collector. *)
+
+  val key : id -> string -> (key, Error.t) result
+  (** [key id secret] prepares [secret] for use with [id]. Returns
+      {!Error.Invalid_length} unless [secret] is [key_size id] bytes long. *)
+
   val seal :
-    id ->
-    key:string ->
+    key ->
     nonce:string ->
     aad:string ->
     plaintext:string ->
@@ -93,21 +103,20 @@ module Aead : sig
   (** Single-shot AEAD encryption under an explicit key and nonce, returning the
       ciphertext followed by its tag. Unlike {!Rfc9180.Sender.seal}, nothing
       here prevents nonce reuse: the caller must never seal twice under the same
-      [(key, nonce)] pair. This exists for protocols layered on HPKE that
-      encrypt with the suite's AEAD under exported keys, such as RFC 9458
-      responses. Returns {!Error.Invalid_length} for a key or nonce of the wrong
-      size and {!Error.Plaintext_too_long} beyond the AEAD's limit. *)
+      key and nonce. This exists for protocols layered on HPKE that encrypt with
+      the suite's AEAD under exported keys, such as RFC 9458 responses. Returns
+      {!Error.Invalid_length} for a nonce of the wrong size and
+      {!Error.Plaintext_too_long} beyond the AEAD's limit. *)
 
   val open_ :
-    id ->
-    key:string ->
+    key ->
     nonce:string ->
     aad:string ->
     ciphertext:string ->
     (string, Error.t) result
   (** Single-shot AEAD decryption under an explicit key and nonce. Returns
-      {!Error.Invalid_length} for a key or nonce of the wrong size.
-      Authentication failure and malformed ciphertexts are both reported as
+      {!Error.Invalid_length} for a nonce of the wrong size. Authentication
+      failure and malformed ciphertexts are both reported as
       {!Error.Open_error}. *)
 end
 

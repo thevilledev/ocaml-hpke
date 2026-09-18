@@ -298,16 +298,20 @@ in
 let prk = Kdf.extract kdf ~salt secret in
 let* key = Kdf.expand kdf ~prk ~info:"key" (Aead.key_size aead) in
 let* nonce = Kdf.expand kdf ~prk ~info:"nonce" (Aead.nonce_size aead) in
-Aead.seal aead ~key ~nonce ~aad:"" ~plaintext</code></pre>
+let* key = Aead.key aead key in
+Aead.seal key ~nonce ~aad:"" ~plaintext</code></pre>
 
       <p>
         <code>Kdf.extract</code> and <code>Kdf.expand</code> are plain RFC 5869
         HKDF, without the labels HPKE's own key schedule adds.
-        <code>Aead.seal</code> and <code>Aead.open_</code> take an explicit key
-        and nonce, so unlike a context they cannot stop a nonce from being
-        used twice: that is the caller's responsibility. Both report a key,
-        nonce, pseudorandom key, or output length of the wrong size as
-        <code>Invalid_length</code>.
+        <code>Aead.key</code> prepares a key, and <code>Aead.seal</code> and
+        <code>Aead.open_</code> use it with an explicit nonce, so unlike a
+        context they cannot stop a nonce from being used twice: that is the
+        caller's responsibility. Preparing an AES-GCM key derives its GHASH
+        tables, which without hardware support costs more than sealing several
+        kilobytes, so a key that seals many messages should be prepared once.
+        A key, nonce, pseudorandom key, or output length of the wrong size is
+        reported as <code>Invalid_length</code>.
       </p>
 
       <h2 id="errors">Errors</h2>

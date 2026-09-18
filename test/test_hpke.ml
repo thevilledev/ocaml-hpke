@@ -702,20 +702,24 @@ let unlabeled_kdf_bounds () =
 let single_shot_aead () =
   List.iter
     (fun aead ->
-      let key = String.make (Aead.key_size aead) '\x2a' in
+      let secret = String.make (Aead.key_size aead) '\x2a' in
+      let key = ok (Aead.key aead secret) in
       let nonce = String.make (Aead.nonce_size aead) '\x07' in
       List.iter
         (fun (aad, plaintext) ->
-          let sealed = ok (Aead.seal aead ~key ~nonce ~aad ~plaintext) in
+          let sealed = ok (Aead.seal key ~nonce ~aad ~plaintext) in
           Alcotest.(check int)
             "ciphertext length"
             (String.length plaintext + Aead.tag_size aead)
             (String.length sealed);
           Alcotest.(check string)
             "round trip" plaintext
-            (ok (Aead.open_ aead ~key ~nonce ~aad ~ciphertext:sealed));
+            (ok (Aead.open_ key ~nonce ~aad ~ciphertext:sealed));
+          Alcotest.(check string)
+            "a key prepared again seals the same" sealed
+            (ok (Aead.seal (ok (Aead.key aead secret)) ~nonce ~aad ~plaintext));
           let expect_open_error label ciphertext ~aad =
-            match Aead.open_ aead ~key ~nonce ~aad ~ciphertext with
+            match Aead.open_ key ~nonce ~aad ~ciphertext with
             | Error Error.Open_error -> ()
             | Ok _ -> Alcotest.failf "%s was accepted" label
             | Error error ->
@@ -735,17 +739,27 @@ let single_shot_aead () =
             ~aad;
           expect_open_error "empty ciphertext" "" ~aad)
         [ ("", ""); ("aad", ""); ("", "message"); ("\000aad", "\000message") ];
-      let short_key = String.sub key 0 (String.length key - 1) in
+      let expect_invalid_key label secret =
+        match Aead.key aead secret with
+        | Error (Error.Invalid_length _) -> ()
+        | Ok _ -> Alcotest.failf "%s was accepted" label
+        | Error error ->
+            Alcotest.failf "%s: unexpected %s" label (error_to_string error)
+      in
+      expect_invalid_key "short key"
+        (String.sub secret 0 (String.length secret - 1));
+      expect_invalid_key "long key" (secret ^ "\000");
+      expect_invalid_key "empty key" "";
+      (* A 16-byte key is a valid AES key, but not for an AEAD that takes 32. *)
+      if Aead.key_size aead <> 16 then
+        expect_invalid_key "key of another AEAD" (String.make 16 '\x2a');
       let long_nonce = nonce ^ "\000" in
-      expect_invalid_length "short key on seal"
-        (Aead.seal aead ~key:short_key ~nonce ~aad:"" ~plaintext:"");
       expect_invalid_length "long nonce on seal"
-        (Aead.seal aead ~key ~nonce:long_nonce ~aad:"" ~plaintext:"");
-      expect_invalid_length "short key on open"
-        (Aead.open_ aead ~key:short_key ~nonce ~aad:""
-           ~ciphertext:(String.make 16 '\000'));
+        (Aead.seal key ~nonce:long_nonce ~aad:"" ~plaintext:"");
+      expect_invalid_length "short nonce on seal"
+        (Aead.seal key ~nonce:"" ~aad:"" ~plaintext:"");
       expect_invalid_length "long nonce on open"
-        (Aead.open_ aead ~key ~nonce:long_nonce ~aad:""
+        (Aead.open_ key ~nonce:long_nonce ~aad:""
            ~ciphertext:(String.make 16 '\000')))
     all_aeads
 

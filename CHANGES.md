@@ -4,9 +4,13 @@
 
 - Export the suite's unlabeled primitives for protocols layered on HPKE, such
   as Oblivious HTTP (RFC 9458): `Kdf.extract` and `Kdf.expand` (plain RFC 5869
-  HKDF) and the single-shot `Aead.seal` and `Aead.open_` under an explicit key
-  and nonce. Wrong-sized keys, nonces, pseudorandom keys, and output lengths
-  are reported as `Invalid_length`.
+  HKDF) and the single-shot `Aead.seal` and `Aead.open_` under a key prepared
+  by `Aead.key` and an explicit nonce. Wrong-sized keys, nonces, pseudorandom
+  keys, and output lengths are reported as `Invalid_length`.
+- Expand the AEAD key once per context, and not on every seal and open.
+  Without hardware support, deriving the GHASH tables of an AES-GCM key costs
+  more than sealing several kilobytes, so contexts that carry many messages
+  are several times faster.
 - Export the RFC 9180 parameters `Aead.key_size`, `Aead.nonce_size`,
   `Aead.tag_size`, `Kdf.hash_size`, and `Kem.secret_size`.
 - Add the separate `hpke.for_testing` library, which sets up a Base or PSK

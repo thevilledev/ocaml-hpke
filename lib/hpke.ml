@@ -163,31 +163,49 @@ module Aead = struct
     in
     Int64.compare length maximum <= 0
 
-  let encrypt id ~key ~nonce ~aad plaintext =
+  (* Expanding an AES-GCM key derives its GHASH tables, which without hardware
+     support costs more than sealing several kilobytes. A key is therefore
+     expanded once and kept. *)
+  type expanded =
+    | Aes_gcm of Mirage_crypto.AES.GCM.key
+    | Chacha20 of Mirage_crypto.Chacha20.key
+
+  type key = { id : id; expanded : expanded }
+
+  let expand id secret =
+    match id with
+    | Aes_128_gcm | Aes_256_gcm ->
+        Aes_gcm (Mirage_crypto.AES.GCM.of_secret secret)
+    | Chacha20_poly1305 -> Chacha20 (Mirage_crypto.Chacha20.of_secret secret)
+
+  let key id secret =
+    if String.length secret <> key_size id then
+      Error (Error.Invalid_length "wrong AEAD key length")
+    else
+      try Ok { id; expanded = expand id secret }
+      with Invalid_argument reason -> Error (Error.Internal_error reason)
+
+  let encrypt key ~nonce ~aad plaintext =
     try
-      match id with
-      | Aes_128_gcm | Aes_256_gcm ->
-          let key = Mirage_crypto.AES.GCM.of_secret key in
+      match key.expanded with
+      | Aes_gcm key ->
           Ok
             (Mirage_crypto.AES.GCM.authenticate_encrypt ~key ~nonce ~adata:aad
                plaintext)
-      | Chacha20_poly1305 ->
-          let key = Mirage_crypto.Chacha20.of_secret key in
+      | Chacha20 key ->
           Ok
             (Mirage_crypto.Chacha20.authenticate_encrypt ~key ~nonce ~adata:aad
                plaintext)
     with Invalid_argument reason -> Error (Error.Internal_error reason)
 
-  let decrypt id ~key ~nonce ~aad ciphertext =
+  let decrypt key ~nonce ~aad ciphertext =
     try
       let plaintext =
-        match id with
-        | Aes_128_gcm | Aes_256_gcm ->
-            let key = Mirage_crypto.AES.GCM.of_secret key in
+        match key.expanded with
+        | Aes_gcm key ->
             Mirage_crypto.AES.GCM.authenticate_decrypt ~key ~nonce ~adata:aad
               ciphertext
-        | Chacha20_poly1305 ->
-            let key = Mirage_crypto.Chacha20.of_secret key in
+        | Chacha20 key ->
             Mirage_crypto.Chacha20.authenticate_decrypt ~key ~nonce ~adata:aad
               ciphertext
       in
@@ -196,30 +214,29 @@ module Aead = struct
       | None -> Error Error.Open_error
     with Invalid_argument _ -> Error Error.Open_error
 
-  let check_parameters id ~key ~nonce =
-    if String.length key <> key_size id then
-      Error (Error.Invalid_length "wrong AEAD key length")
-    else if String.length nonce <> nonce_size id then
+  let check_nonce key nonce =
+    if String.length nonce <> nonce_size key.id then
       Error (Error.Invalid_length "wrong AEAD nonce length")
     else Ok ()
 
-  let seal id ~key ~nonce ~aad ~plaintext =
-    match check_parameters id ~key ~nonce with
+  let seal key ~nonce ~aad ~plaintext =
+    match check_nonce key nonce with
     | Error _ as error -> error
     | Ok () ->
-        if not (plaintext_fits id (String.length plaintext)) then
+        if not (plaintext_fits key.id (String.length plaintext)) then
           Error Error.Plaintext_too_long
-        else encrypt id ~key ~nonce ~aad plaintext
+        else encrypt key ~nonce ~aad plaintext
 
-  let open_ id ~key ~nonce ~aad ~ciphertext =
-    match check_parameters id ~key ~nonce with
+  let open_ key ~nonce ~aad ~ciphertext =
+    match check_nonce key nonce with
     | Error _ as error -> error
     | Ok () ->
         let length = String.length ciphertext in
         if
-          length < tag_size id || not (plaintext_fits id (length - tag_size id))
+          length < tag_size key.id
+          || not (plaintext_fits key.id (length - tag_size key.id))
         then Error Error.Open_error
-        else decrypt id ~key ~nonce ~aad ciphertext
+        else decrypt key ~nonce ~aad ciphertext
 end
 
 module Util = struct
@@ -586,7 +603,7 @@ let decap recipient ~encapsulated_key =
 module Rfc9180 = struct
   type encryption_state = {
     aead : Aead.id;
-    key : string;
+    key : Aead.key;
     base_nonce : string;
     exporter_secret : string;
     kdf : Kdf.id;
@@ -661,8 +678,7 @@ module Rfc9180 = struct
         then Error Error.Plaintext_too_long
         else
           let* ciphertext =
-            Aead.encrypt state.aead ~key:state.key ~nonce:(nonce state) ~aad
-              plaintext
+            Aead.encrypt state.key ~nonce:(nonce state) ~aad plaintext
           in
           increment_sequence state.sequence;
           Ok ciphertext)
@@ -681,8 +697,7 @@ module Rfc9180 = struct
             Error Error.Open_error
           else
             let* plaintext =
-              Aead.decrypt state.aead ~key:state.key ~nonce:(nonce state) ~aad
-                ciphertext
+              Aead.decrypt state.key ~nonce:(nonce state) ~aad ciphertext
             in
             increment_sequence state.sequence;
             Ok plaintext)
@@ -764,6 +779,13 @@ module Rfc9180 = struct
           Labeled_kdf.expand ~kdf ~suite_id ~prk:secret ~label:"key"
             ~info:key_schedule_context
             (Aead.key_size suite_details.aead)
+        in
+        (* Expanded here, once, and not on every seal or open. *)
+        let key =
+          {
+            Aead.id = suite_details.aead;
+            expanded = Aead.expand suite_details.aead key;
+          }
         in
         let base_nonce =
           Labeled_kdf.expand ~kdf ~suite_id ~prk:secret ~label:"base_nonce"

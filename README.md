@@ -111,8 +111,10 @@ consumer does not repeat the identifier-to-algorithm dispatch:
 
 - `Kdf.extract` and `Kdf.expand` are plain RFC 5869 HKDF, without the labels
   that HPKE's own key schedule adds.
-- `Aead.seal` and `Aead.open_` take an explicit key and nonce. Unlike a
-  context they cannot prevent nonce reuse; that is the caller's responsibility.
+- `Aead.key` prepares a key, and `Aead.seal` and `Aead.open_` use it with an
+  explicit nonce. Unlike a context they cannot prevent nonce reuse; that is the
+  caller's responsibility. Preparing an AES-GCM key is costly where the
+  hardware does not help, so prepare it once for everything sealed under it.
 - `Aead.key_size`, `Aead.nonce_size`, `Aead.tag_size`, `Kdf.hash_size`, and
   `Kem.secret_size` report the RFC 9180 parameters Nk, Nn, Nt, Nh, and Nsecret.
 

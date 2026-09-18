@@ -325,7 +325,8 @@ let test_unlabeled_kdf vector =
    published key makes each one a known answer for Aead.seal and Aead.open_. *)
 let test_single_shot_aead vector =
   let aead = member_int "aead_id" vector |> Aead.of_int |> ok in
-  let key = member_hex "key" vector in
+  (* Prepared once for the whole sequence, as a layered protocol would. *)
+  let key = ok (Aead.key aead (member_hex "key" vector)) in
   vector |> member "encryptions" |> to_list
   |> List.iteri (fun index encryption ->
       let nonce = member_hex "nonce" encryption in
@@ -333,15 +334,12 @@ let test_single_shot_aead vector =
       check_hex
         (Format.sprintf "sealed %d" index)
         (member_string "ct" encryption)
-        (ok
-           (Aead.seal aead ~key ~nonce ~aad
-              ~plaintext:(member_hex "pt" encryption)));
+        (ok (Aead.seal key ~nonce ~aad ~plaintext:(member_hex "pt" encryption)));
       check_hex
         (Format.sprintf "opened %d" index)
         (member_string "pt" encryption)
         (ok
-           (Aead.open_ aead ~key ~nonce ~aad
-              ~ciphertext:(member_hex "ct" encryption))))
+           (Aead.open_ key ~nonce ~aad ~ciphertext:(member_hex "ct" encryption))))
 
 let vector_name vector =
   Format.sprintf "mode-%d-kem-%04x-kdf-%04x-aead-%04x"
