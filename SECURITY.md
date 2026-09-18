@@ -20,6 +20,9 @@ disclosure after a fix is available.
 
 - Initialize a cryptographically secure Mirage Crypto RNG and pass it
   explicitly. Deterministic or test RNGs must never be used in production.
+- Never link `hpke.for_testing` outside a test suite. It sets up a sender from
+  a caller-chosen ephemeral private key; reusing or disclosing that key breaks
+  the confidentiality of every message sealed under it.
 - `Aead.seal` takes an explicit key and nonce and cannot prevent their reuse.
   Sealing twice under one `(key, nonce)` pair forfeits both confidentiality
   and authenticity. Prefer a context, which sequences nonces itself, and derive

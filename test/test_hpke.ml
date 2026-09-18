@@ -749,6 +749,68 @@ let single_shot_aead () =
            ~ciphertext:(String.make 16 '\000')))
     all_aeads
 
+let deterministic_sender () =
+  let generator = rng () in
+  let recipient, public = ok (generate_key_pair ~rng:generator Kem.X25519) in
+  let ephemeral, ephemeral_public =
+    ok (derive_key_pair Kem.X25519 ~ikm:(String.make 32 '\x45'))
+  in
+  let setup () =
+    ok
+      (Hpke_for_testing.setup_base_sender x25519_aes_suite ~ephemeral
+         ~recipient:public ~info)
+  in
+  let first = setup () and second = setup () in
+  Alcotest.(check string)
+    "encapsulated key is the ephemeral public key"
+    (Public_key.to_bytes ephemeral_public)
+    first.encapsulated_key;
+  let sealed = ok (Rfc9180.Sender.seal first.context ~aad:"aad" ~plaintext) in
+  Alcotest.(check string)
+    "same ephemeral key, same ciphertext" sealed
+    (ok (Rfc9180.Sender.seal second.context ~aad:"aad" ~plaintext));
+  let receiver =
+    ok
+      (Rfc9180.setup_base_receiver x25519_aes_suite ~recipient
+         ~encapsulated_key:first.encapsulated_key ~info)
+  in
+  Alcotest.(check string)
+    "an ordinary receiver opens it" plaintext
+    (ok (Rfc9180.Receiver.open_ receiver ~aad:"aad" ~ciphertext:sealed));
+  let p256_ephemeral, p256_public =
+    ok (derive_key_pair Kem.P256 ~ikm:(String.make 32 '\x46'))
+  in
+  let expect_key_mismatch label = function
+    | Error Error.Key_mismatch -> ()
+    | _ -> Alcotest.failf "%s was not reported as a key mismatch" label
+  in
+  expect_key_mismatch "ephemeral key of another KEM"
+    (Hpke_for_testing.setup_base_sender x25519_aes_suite
+       ~ephemeral:p256_ephemeral ~recipient:public ~info);
+  expect_key_mismatch "recipient key of another KEM"
+    (Hpke_for_testing.setup_base_sender x25519_aes_suite ~ephemeral
+       ~recipient:p256_public ~info);
+  let psk = ok (Psk.create ~secret:(String.make 32 '\x11') ~id:"psk") in
+  let psk_sender =
+    ok
+      (Hpke_for_testing.setup_psk_sender x25519_aes_suite ~ephemeral
+         ~recipient:public ~psk ~info)
+  in
+  let psk_receiver =
+    ok
+      (Rfc9180.setup_psk_receiver x25519_aes_suite ~recipient ~psk
+         ~encapsulated_key:psk_sender.encapsulated_key ~info)
+  in
+  let psk_sealed =
+    ok (Rfc9180.Sender.seal psk_sender.context ~aad:"" ~plaintext)
+  in
+  Alcotest.(check bool)
+    "PSK mode changes the key schedule" false
+    (String.equal sealed psk_sealed);
+  Alcotest.(check string)
+    "PSK round trip" plaintext
+    (ok (Rfc9180.Receiver.open_ psk_receiver ~aad:"" ~ciphertext:psk_sealed))
+
 let qcheck_round_trip =
   let generator = QCheck2.Gen.string_size (QCheck2.Gen.int_bound 1024) in
   QCheck2.Test.make ~name:"arbitrary binary messages round trip" ~count:100
@@ -830,6 +892,10 @@ let () =
           Alcotest.test_case "algorithm sizes" `Quick algorithm_sizes;
           Alcotest.test_case "unlabeled KDF bounds" `Quick unlabeled_kdf_bounds;
           Alcotest.test_case "single-shot AEAD" `Quick single_shot_aead;
+        ] );
+      ( "for testing",
+        [
+          Alcotest.test_case "deterministic sender" `Quick deterministic_sender;
         ] );
       ( "properties",
         [

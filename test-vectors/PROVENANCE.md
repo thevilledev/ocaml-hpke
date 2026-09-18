@@ -19,7 +19,10 @@ Each vector also retains the published key-schedule intermediates
 `LabeledExpand`, which are unlabeled HKDF over a framed input, so rebuilding
 that framing in the test makes them known answers for the public `Kdf.extract`
 and `Kdf.expand`. The published `key`, with the nonce recorded for each
-encryption, does the same for `Aead.seal` and `Aead.open_`.
+encryption, does the same for `Aead.seal` and `Aead.open_`. The published
+`skEm` is the known answer for `hpke.for_testing`, which must reach the same
+encapsulation, ciphertexts, and exports from the ephemeral private key as the
+public API does from `ikmE`.
 
 Regenerate the corpus from the pinned source with:
 

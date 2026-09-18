@@ -1,6 +1,7 @@
 (library
  (name hpke)
  (public_name hpke)
+ (modules hpke)
  (libraries
   mirage-crypto
   mirage-crypto-ec
@@ -8,3 +9,9 @@
   kdf.hkdf
   digestif
   eqaf))
+
+(library
+ (name hpke_for_testing)
+ (public_name hpke.for_testing)
+ (modules hpke_for_testing)
+ (libraries hpke))

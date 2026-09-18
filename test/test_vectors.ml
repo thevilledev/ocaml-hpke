@@ -206,6 +206,73 @@ let test_vector vector =
       let aead = Aead.of_int identifier |> ok in
       test_encryption_vector vector kem kdf aead
 
+(* The vectors publish skEm as well as ikmE. Hpke_for_testing takes the
+   ephemeral private key itself, so it must reach the same encapsulation,
+   ciphertexts, and exports as the fixed-randomness path above. *)
+let setup_deterministic_sender : type capability.
+    capability Suite.t ->
+    ephemeral:Private_key.t ->
+    recipient:Public_key.t ->
+    psk:Psk.t option ->
+    info:string ->
+    (capability Rfc9180.sender_setup, Error.t) result =
+ fun suite ~ephemeral ~recipient ~psk ~info ->
+  match psk with
+  | None -> Hpke_for_testing.setup_base_sender suite ~ephemeral ~recipient ~info
+  | Some psk ->
+      Hpke_for_testing.setup_psk_sender suite ~ephemeral ~recipient ~psk ~info
+
+let check_sender_exports vector sender =
+  vector |> member "exports" |> to_list
+  |> List.iteri (fun index export ->
+      check_hex
+        (Format.sprintf "sender export %d" index)
+        (member_string "exported_value" export)
+        (ok
+           (Rfc9180.Sender.export sender
+              ~context:(member_hex "exporter_context" export)
+              ~length:(member_int "L" export))))
+
+let test_deterministic_sender vector =
+  let kem = kem vector and kdf = kdf vector in
+  let _, recipient = prepare_keys vector kem in
+  let ephemeral = ok (Private_key.of_bytes ~kem (member_hex "skEm" vector)) in
+  let psk = psk vector in
+  let info = member_hex "info" vector in
+  match member_int "aead_id" vector with
+  | 0xffff ->
+      let sender =
+        ok
+          (setup_deterministic_sender
+             (Suite.export_only ~kem ~kdf)
+             ~ephemeral ~recipient ~psk ~info)
+      in
+      check_hex "encapsulated key"
+        (member_string "enc" vector)
+        sender.encapsulated_key;
+      check_sender_exports vector sender.context
+  | identifier ->
+      let aead = Aead.of_int identifier |> ok in
+      let sender =
+        ok
+          (setup_deterministic_sender
+             (Suite.create ~kem ~kdf ~aead)
+             ~ephemeral ~recipient ~psk ~info)
+      in
+      check_hex "encapsulated key"
+        (member_string "enc" vector)
+        sender.encapsulated_key;
+      vector |> member "encryptions" |> to_list
+      |> List.iteri (fun index encryption ->
+          check_hex
+            (Format.sprintf "sender ciphertext %d" index)
+            (member_string "ct" encryption)
+            (ok
+               (Rfc9180.Sender.seal sender.context
+                  ~aad:(member_hex "aad" encryption)
+                  ~plaintext:(member_hex "pt" encryption))));
+      check_sender_exports vector sender.context
+
 let i2osp2 value =
   String.init 2 (function
     | 0 -> Char.chr ((value lsr 8) land 0xff)
@@ -300,6 +367,7 @@ let () =
   Alcotest.run "hpke known-answer vectors"
     [
       ("RFC 9180", tests_of test_vector vectors);
+      ("deterministic sender", tests_of test_deterministic_sender vectors);
       ("unlabeled KDF", tests_of test_unlabeled_kdf vectors);
       ("single-shot AEAD", tests_of test_single_shot_aead encryption_vectors);
     ]

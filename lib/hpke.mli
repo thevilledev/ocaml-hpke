@@ -300,3 +300,30 @@ module Rfc9180 : sig
     (string, Error.t) result
   (** Open one PSK-mode message with normalized peer failure. *)
 end
+
+(**/**)
+
+module Private : sig
+  (* Not part of the public API and excluded from its stability guarantees.
+     These functions let the caller choose the sender's ephemeral key, which
+     breaks HPKE's security if that key is ever reused or disclosed. They back
+     the [hpke.for_testing] library, which is the only supported way to reach
+     them. *)
+
+  val setup_base_sender_with_ephemeral :
+    'capability Suite.t ->
+    ephemeral:Private_key.t ->
+    recipient:Public_key.t ->
+    info:string ->
+    ('capability Rfc9180.sender_setup, Error.t) result
+
+  val setup_psk_sender_with_ephemeral :
+    'capability Suite.t ->
+    ephemeral:Private_key.t ->
+    recipient:Public_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    ('capability Rfc9180.sender_setup, Error.t) result
+end
+
+(**/**)

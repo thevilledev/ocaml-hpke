@@ -548,13 +548,18 @@ let extract_and_expand kem ~dh ~kem_context =
   Labeled_kdf.kem_expand kem ~prk:eae_prk ~label:"shared_secret"
     ~info:kem_context (Kem.secret_size kem)
 
-let encap ~rng recipient =
+let encap_with ~ephemeral recipient =
   let kem = Public_key.kem recipient in
-  let* private_ephemeral, public_ephemeral = generate_key_pair ~rng kem in
-  let* dh_value = dh private_ephemeral recipient in
-  let encapsulated_key = Public_key.to_bytes public_ephemeral in
+  let* dh_value = dh ephemeral recipient in
+  let encapsulated_key =
+    Public_key.to_bytes (Private_key.public_key ephemeral)
+  in
   let kem_context = encapsulated_key ^ Public_key.to_bytes recipient in
   Ok (extract_and_expand kem ~dh:dh_value ~kem_context, encapsulated_key)
+
+let encap ~rng recipient =
+  let* ephemeral, _ = generate_key_pair ~rng (Public_key.kem recipient) in
+  encap_with ~ephemeral recipient
 
 let decap recipient ~encapsulated_key =
   let kem = Private_key.kem recipient in
@@ -785,15 +790,20 @@ module Rfc9180 = struct
     if Suite.kem suite = Private_key.kem recipient then Ok ()
     else Error Error.Key_mismatch
 
-  let setup_sender_inner ~rng suite ~recipient ~mode ~info =
+  let setup_sender_inner ~encap suite ~recipient ~mode ~info =
     let* () = check_public_key suite recipient in
-    let* shared_secret, encapsulated_key = encap ~rng recipient in
+    let* shared_secret, encapsulated_key = encap recipient in
     let context = key_schedule suite mode ~shared_secret ~info in
     Ok { encapsulated_key; context = Sender.Sender context }
 
-  let setup_sender ~rng suite ~recipient ~mode ~info =
-    try setup_sender_inner ~rng suite ~recipient ~mode ~info
+  let setup_sender_encap ~encap suite ~recipient ~mode ~info =
+    try setup_sender_inner ~encap suite ~recipient ~mode ~info
     with Invalid_argument reason -> Error (Error.Invalid_length reason)
+
+  let setup_sender ~rng = setup_sender_encap ~encap:(encap ~rng)
+
+  let setup_sender_with_ephemeral ~ephemeral =
+    setup_sender_encap ~encap:(encap_with ~ephemeral)
 
   let setup_receiver_inner suite ~recipient ~encapsulated_key ~mode ~info =
     let* () = check_private_key suite recipient in
@@ -847,4 +857,14 @@ module Rfc9180 = struct
       (setup_psk_receiver suite ~recipient ~psk
          ~encapsulated_key:ciphertext.encapsulated_key ~info)
       ~aad ~ciphertext:ciphertext.ciphertext
+end
+
+module Private = struct
+  let setup_base_sender_with_ephemeral suite ~ephemeral ~recipient ~info =
+    Rfc9180.setup_sender_with_ephemeral ~ephemeral suite ~recipient
+      ~mode:Rfc9180.Base ~info
+
+  let setup_psk_sender_with_ephemeral suite ~ephemeral ~recipient ~psk ~info =
+    Rfc9180.setup_sender_with_ephemeral ~ephemeral suite ~recipient
+      ~mode:(Rfc9180.Psk_mode psk) ~info
 end

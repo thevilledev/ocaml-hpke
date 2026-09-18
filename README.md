@@ -116,6 +116,11 @@ consumer does not repeat the identifier-to-algorithm dispatch:
 - `Aead.key_size`, `Aead.nonce_size`, `Aead.tag_size`, `Kdf.hash_size`, and
   `Kem.secret_size` report the RFC 9180 parameters Nk, Nn, Nt, Nh, and Nsecret.
 
+The separate `hpke.for_testing` library sets up a sender from a caller-chosen
+ephemeral private key. It exists to reproduce published vectors that fix that
+key, and must never be linked outside a test suite: see
+[SECURITY.md](SECURITY.md).
+
 ## Development
 
 ```sh

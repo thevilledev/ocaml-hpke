@@ -63,17 +63,38 @@ dune runtest</code></pre>
           <tr><th scope="row">Suites</th><td>All 36 Base combinations, PSK across every KEM, and export-only agreement.</td></tr>
           <tr><th scope="row">Invariants</th><td>Sequence retention after a failed open, malformed inputs, single-shot error normalization, and adversarial mismatches.</td></tr>
           <tr><th scope="row">Suite primitives</th><td>Algorithm sizes, bounds of the unlabeled KDF, and single-shot AEAD round trips, tampering, and length checks.</td></tr>
+          <tr><th scope="row">For testing</th><td>The deterministic sender: repeatability, agreement with an ordinary receiver, and KEM mismatches.</td></tr>
           <tr><th scope="row">Properties</th><td>QCheck round-trip and peer-input totality.</td></tr>
         </tbody>
       </table>
 
       <p>
         A second executable, <code>test_vectors</code>, replays the pinned
-        RFC 9180 corpus three ways: through the public API with fixed
-        randomness, against the published key-schedule
+        RFC 9180 corpus four ways: through the public API with fixed
+        randomness, through <code>hpke.for_testing</code> with the published
+        ephemeral private key, against the published key-schedule
         intermediates for <code>Kdf.extract</code> and <code>Kdf.expand</code>,
         and against every encryption record for <code>Aead.seal</code> and
         <code>Aead.open_</code>.
+      </p>
+
+      <h2 id="for-testing">Deterministic senders</h2>
+
+      <p>
+        HPKE requires a fresh, secret ephemeral key for every sender context,
+        and the public API always draws it from the generator it is given. Some
+        published vectors fix the ephemeral private key itself, including
+        those of protocols layered on HPKE such as Oblivious HTTP (RFC 9458).
+        The separate <code>hpke.for_testing</code> library reproduces them:
+      </p>
+
+      <pre><code>Hpke_for_testing.setup_base_sender suite ~ephemeral ~recipient ~info</code></pre>
+
+      <p>
+        It is a separate findlib library so that a dependency on it is visible
+        in a <code>dune</code> file. Reusing or disclosing an ephemeral key
+        breaks the confidentiality of everything sealed under it; nothing
+        outside a test suite should link <code>hpke.for_testing</code>.
       </p>
 
       <h2 id="fuzz">Fuzzing</h2>
@@ -107,6 +128,7 @@ opam lint hpke.opam</code></pre>
       <pre><code>lib/
   hpke.mli              public API and contract
   hpke.ml               DHKEM, key schedule, contexts
+  hpke_for_testing.mli  hpke.for_testing: deterministic senders
 test/
   test_hpke.ml          vectors, suites, invariants, properties
   test_vectors.ml       the pinned RFC 9180 corpus

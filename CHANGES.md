@@ -9,9 +9,12 @@
   are reported as `Invalid_length`.
 - Export the RFC 9180 parameters `Aead.key_size`, `Aead.nonce_size`,
   `Aead.tag_size`, `Kdf.hash_size`, and `Kem.secret_size`.
+- Add the separate `hpke.for_testing` library, which sets up a Base or PSK
+  sender from a caller-chosen ephemeral private key so that vectors which fix
+  `skE` can be reproduced. It must never be linked outside a test suite.
 - Retain the key-schedule intermediates in the pinned RFC 9180 corpus and use
-  them and every encryption record as known answers for the new entry
-  points.
+  them, the published `skEm`, and every encryption record as known answers
+  for the new entry points.
 - Keep the existing API and RFC 9180 wire behavior unchanged from 0.1.1.
 
 ## 0.1.1 — 2026-08-29
