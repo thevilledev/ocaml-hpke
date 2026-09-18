@@ -13,6 +13,14 @@ combinations retain the first three encryption records. Three representative
 suites retain all 257 records so that sequence numbers crossing the one-byte
 boundary are covered.
 
+Each vector also retains the published key-schedule intermediates
+`shared_secret`, `key_schedule_context`, `secret`, `key`, `base_nonce`, and
+`exporter_secret`. RFC 9180 derives them with `LabeledExtract` and
+`LabeledExpand`, which are unlabeled HKDF over a framed input, so rebuilding
+that framing in the test makes them known answers for the public `Kdf.extract`
+and `Kdf.expand`. The published `key`, with the nonce recorded for each
+encryption, does the same for `Aead.seal` and `Aead.open_`.
+
 Regenerate the corpus from the pinned source with:
 
 ```sh

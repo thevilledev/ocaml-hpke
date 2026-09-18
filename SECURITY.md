@@ -20,6 +20,10 @@ disclosure after a fix is available.
 
 - Initialize a cryptographically secure Mirage Crypto RNG and pass it
   explicitly. Deterministic or test RNGs must never be used in production.
+- `Aead.seal` takes an explicit key and nonce and cannot prevent their reuse.
+  Sealing twice under one `(key, nonce)` pair forfeits both confidentiality
+  and authenticity. Prefer a context, which sequences nonces itself, and derive
+  a fresh key or nonce for every single-shot call.
 - A sender or receiver context is stateful. Serialize access at the application
   layer. `Concurrent_use` means no cryptography was performed by that call.
 - Treat `Open_error` uniformly at protocol boundaries. Do not build an oracle

@@ -206,6 +206,76 @@ let test_vector vector =
       let aead = Aead.of_int identifier |> ok in
       test_encryption_vector vector kem kdf aead
 
+let i2osp2 value =
+  String.init 2 (function
+    | 0 -> Char.chr ((value lsr 8) land 0xff)
+    | _ -> Char.chr (value land 0xff))
+
+(* RFC 9180 builds its key schedule from LabeledExtract and LabeledExpand, which
+   are the unlabeled HKDF functions over a framed input. Rebuilding that framing
+   here turns the published intermediates into known answers for the public
+   Kdf.extract and Kdf.expand. *)
+let test_unlabeled_kdf vector =
+  let kdf = kdf vector in
+  let aead_id = member_int "aead_id" vector in
+  let suite_id =
+    "HPKE"
+    ^ i2osp2 (member_int "kem_id" vector)
+    ^ i2osp2 (Kdf.to_int kdf)
+    ^ i2osp2 aead_id
+  in
+  let psk_secret =
+    match member_int "mode" vector with 0 -> "" | _ -> member_hex "psk" vector
+  in
+  let secret =
+    Kdf.extract kdf
+      ~salt:(member_hex "shared_secret" vector)
+      ("HPKE-v1" ^ suite_id ^ "secret" ^ psk_secret)
+  in
+  check_hex "secret" (member_string "secret" vector) secret;
+  let labeled_expand label length =
+    ok
+      (Kdf.expand kdf ~prk:secret
+         ~info:
+           (i2osp2 length ^ "HPKE-v1" ^ suite_id ^ label
+           ^ member_hex "key_schedule_context" vector)
+         length)
+  in
+  check_hex "exporter secret"
+    (member_string "exporter_secret" vector)
+    (labeled_expand "exp" (Kdf.hash_size kdf));
+  if aead_id <> 0xffff then begin
+    let aead = Aead.of_int aead_id |> ok in
+    check_hex "key"
+      (member_string "key" vector)
+      (labeled_expand "key" (Aead.key_size aead));
+    check_hex "base nonce"
+      (member_string "base_nonce" vector)
+      (labeled_expand "base_nonce" (Aead.nonce_size aead))
+  end
+
+(* Every encryption record carries the nonce it was sealed under, so the
+   published key makes each one a known answer for Aead.seal and Aead.open_. *)
+let test_single_shot_aead vector =
+  let aead = member_int "aead_id" vector |> Aead.of_int |> ok in
+  let key = member_hex "key" vector in
+  vector |> member "encryptions" |> to_list
+  |> List.iteri (fun index encryption ->
+      let nonce = member_hex "nonce" encryption in
+      let aad = member_hex "aad" encryption in
+      check_hex
+        (Format.sprintf "sealed %d" index)
+        (member_string "ct" encryption)
+        (ok
+           (Aead.seal aead ~key ~nonce ~aad
+              ~plaintext:(member_hex "pt" encryption)));
+      check_hex
+        (Format.sprintf "opened %d" index)
+        (member_string "pt" encryption)
+        (ok
+           (Aead.open_ aead ~key ~nonce ~aad
+              ~ciphertext:(member_hex "ct" encryption))))
+
 let vector_name vector =
   Format.sprintf "mode-%d-kem-%04x-kdf-%04x-aead-%04x"
     (member_int "mode" vector)
@@ -218,11 +288,18 @@ let () =
   let document = Yojson.Safe.from_file path in
   let vectors = document |> member "vectors" |> to_list in
   Alcotest.(check int) "supported vector count" 48 (List.length vectors);
-  let tests =
+  let tests_of test vectors =
     List.map
       (fun vector ->
-        Alcotest.test_case (vector_name vector) `Quick (fun () ->
-            test_vector vector))
+        Alcotest.test_case (vector_name vector) `Quick (fun () -> test vector))
       vectors
   in
-  Alcotest.run "hpke known-answer vectors" [ ("RFC 9180", tests) ]
+  let encryption_vectors =
+    List.filter (fun vector -> member_int "aead_id" vector <> 0xffff) vectors
+  in
+  Alcotest.run "hpke known-answer vectors"
+    [
+      ("RFC 9180", tests_of test_vector vectors);
+      ("unlabeled KDF", tests_of test_unlabeled_kdf vectors);
+      ("single-shot AEAD", tests_of test_single_shot_aead encryption_vectors);
+    ]

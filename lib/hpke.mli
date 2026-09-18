@@ -35,6 +35,9 @@ module Kem : sig
   val public_key_size : id -> int
   val private_key_size : id -> int
   val encapsulated_key_size : id -> int
+
+  val secret_size : id -> int
+  (** [Nsecret], the length in bytes of the KEM shared secret. *)
 end
 
 module Kdf : sig
@@ -44,6 +47,22 @@ module Kdf : sig
   val to_int : id -> int
   val of_int : int -> (id, Error.t) result
   val pp : Format.formatter -> id -> unit
+
+  val hash_size : id -> int
+  (** [Nh], the output length in bytes of the underlying hash function. *)
+
+  val extract : id -> salt:string -> string -> string
+  (** [extract id ~salt ikm] is the unlabeled RFC 5869 [HKDF-Extract(salt, ikm)]
+      of this KDF. HPKE's own key schedule uses labeled derivations internally;
+      this function exists for protocols layered on HPKE that derive further
+      keys with the suite's KDF, such as the response keys of RFC 9458. *)
+
+  val expand :
+    id -> prk:string -> info:string -> int -> (string, Error.t) result
+  (** [expand id ~prk ~info length] is the unlabeled RFC 5869
+      [HKDF-Expand(prk, info, length)] of this KDF. Returns
+      {!Error.Invalid_length} when [prk] is shorter than [hash_size id], or when
+      [length] is negative or exceeds [255 * hash_size id]. *)
 end
 
 module Aead : sig
@@ -54,6 +73,42 @@ module Aead : sig
   val to_int : id -> int
   val of_int : int -> (id, Error.t) result
   val pp : Format.formatter -> id -> unit
+
+  val key_size : id -> int
+  (** [Nk], the key length in bytes. *)
+
+  val nonce_size : id -> int
+  (** [Nn], the nonce length in bytes. *)
+
+  val tag_size : id -> int
+  (** [Nt], the authentication tag length in bytes. *)
+
+  val seal :
+    id ->
+    key:string ->
+    nonce:string ->
+    aad:string ->
+    plaintext:string ->
+    (string, Error.t) result
+  (** Single-shot AEAD encryption under an explicit key and nonce, returning the
+      ciphertext followed by its tag. Unlike {!Rfc9180.Sender.seal}, nothing
+      here prevents nonce reuse: the caller must never seal twice under the same
+      [(key, nonce)] pair. This exists for protocols layered on HPKE that
+      encrypt with the suite's AEAD under exported keys, such as RFC 9458
+      responses. Returns {!Error.Invalid_length} for a key or nonce of the wrong
+      size and {!Error.Plaintext_too_long} beyond the AEAD's limit. *)
+
+  val open_ :
+    id ->
+    key:string ->
+    nonce:string ->
+    aad:string ->
+    ciphertext:string ->
+    (string, Error.t) result
+  (** Single-shot AEAD decryption under an explicit key and nonce. Returns
+      {!Error.Invalid_length} for a key or nonce of the wrong size.
+      Authentication failure and malformed ciphertexts are both reported as
+      {!Error.Open_error}. *)
 end
 
 module Public_key : sig

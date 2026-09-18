@@ -114,8 +114,18 @@ module Kdf = struct
 
   let extract id ~salt ikm = Hkdf.extract ~hash:(hash id) ~salt ikm
 
-  let expand id ~prk ~info length =
+  (* Callers inside this module pass lengths that are already in range. *)
+  let expand_unchecked id ~prk ~info length =
     Hkdf.expand ~hash:(hash id) ~prk ~info length
+
+  let expand id ~prk ~info length =
+    if String.length prk < hash_size id then
+      Error
+        (Error.Invalid_length
+           "the pseudorandom key is shorter than the hash output")
+    else if length < 0 || length > 255 * hash_size id then
+      Error (Error.Invalid_length "the output length is out of range")
+    else Ok (expand_unchecked id ~prk ~info length)
 end
 
 module Aead = struct
@@ -185,6 +195,31 @@ module Aead = struct
       | Some plaintext -> Ok plaintext
       | None -> Error Error.Open_error
     with Invalid_argument _ -> Error Error.Open_error
+
+  let check_parameters id ~key ~nonce =
+    if String.length key <> key_size id then
+      Error (Error.Invalid_length "wrong AEAD key length")
+    else if String.length nonce <> nonce_size id then
+      Error (Error.Invalid_length "wrong AEAD nonce length")
+    else Ok ()
+
+  let seal id ~key ~nonce ~aad ~plaintext =
+    match check_parameters id ~key ~nonce with
+    | Error _ as error -> error
+    | Ok () ->
+        if not (plaintext_fits id (String.length plaintext)) then
+          Error Error.Plaintext_too_long
+        else encrypt id ~key ~nonce ~aad plaintext
+
+  let open_ id ~key ~nonce ~aad ~ciphertext =
+    match check_parameters id ~key ~nonce with
+    | Error _ as error -> error
+    | Ok () ->
+        let length = String.length ciphertext in
+        if
+          length < tag_size id || not (plaintext_fits id (length - tag_size id))
+        then Error Error.Open_error
+        else decrypt id ~key ~nonce ~aad ciphertext
 end
 
 module Util = struct
@@ -398,7 +433,7 @@ module Labeled_kdf = struct
     Kdf.extract kdf ~salt (version_label ^ suite_id ^ label ^ ikm)
 
   let expand ~kdf ~suite_id ~prk ~label ~info length =
-    Kdf.expand kdf ~prk
+    Kdf.expand_unchecked kdf ~prk
       ~info:(Util.i2osp2 length ^ version_label ^ suite_id ^ label ^ info)
       length
 

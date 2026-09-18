@@ -281,6 +281,35 @@ let derive ~rng ~recipient =
         limits per KDF are on the <a href="suites.html#kdf">suites</a> page.
       </p>
 
+      <h2 id="layered">Layered protocols</h2>
+
+      <p>
+        Protocols built on HPKE often derive further keys from an exported
+        secret using the suite's own KDF and AEAD. Oblivious HTTP
+        (RFC 9458) encrypts its response this way. The suite's unlabeled
+        primitives and sizes are exposed for that purpose, so a consumer does
+        not repeat the identifier-to-algorithm dispatch:
+      </p>
+
+      <pre><code>let* secret =
+  Rfc9180.Sender.export context ~context:"response"
+    ~length:(max (Aead.nonce_size aead) (Aead.key_size aead))
+in
+let prk = Kdf.extract kdf ~salt secret in
+let* key = Kdf.expand kdf ~prk ~info:"key" (Aead.key_size aead) in
+let* nonce = Kdf.expand kdf ~prk ~info:"nonce" (Aead.nonce_size aead) in
+Aead.seal aead ~key ~nonce ~aad:"" ~plaintext</code></pre>
+
+      <p>
+        <code>Kdf.extract</code> and <code>Kdf.expand</code> are plain RFC 5869
+        HKDF, without the labels HPKE's own key schedule adds.
+        <code>Aead.seal</code> and <code>Aead.open_</code> take an explicit key
+        and nonce, so unlike a context they cannot stop a nonce from being
+        used twice: that is the caller's responsibility. Both report a key,
+        nonce, pseudorandom key, or output length of the wrong size as
+        <code>Invalid_length</code>.
+      </p>
+
       <h2 id="errors">Errors</h2>
 
       <p>
@@ -300,7 +329,7 @@ let derive ~rng ~recipient =
             <tr><td><code>Key_mismatch</code></td><td>A key's KEM differs from the suite's KEM.</td></tr>
             <tr><td><code>Derive_key_pair_failure</code></td><td>Rejection sampling did not find a valid scalar for a NIST curve.</td></tr>
             <tr><td><code>Invalid_psk</code></td><td>A secret shorter than 32 bytes, or an empty identifier.</td></tr>
-            <tr><td><code>Invalid_length</code></td><td>Deterministic derivation was given input a primitive refused by length.</td></tr>
+            <tr><td><code>Invalid_length</code></td><td>Deterministic derivation was given input a primitive refused by length, or an unlabeled KDF or single-shot AEAD call was given a key, nonce, or length of the wrong size.</td></tr>
             <tr><td><code>Message_limit_reached</code></td><td>The context's 96-bit sequence counter is exhausted.</td></tr>
             <tr><td><code>Plaintext_too_long</code></td><td>The plaintext exceeds the AEAD's limit.</td></tr>
             <tr><td><code>Export_length_out_of_range</code></td><td>An export length is negative or above 255 times the hash size.</td></tr>

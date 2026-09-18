@@ -646,6 +646,109 @@ let export_only () =
   | Error Error.Export_length_out_of_range -> ()
   | _ -> Alcotest.fail "oversized export was not rejected"
 
+let all_kdfs = [ Kdf.Hkdf_sha256; Kdf.Hkdf_sha384; Kdf.Hkdf_sha512 ]
+let all_aeads = [ Aead.Aes_128_gcm; Aead.Aes_256_gcm; Aead.Chacha20_poly1305 ]
+
+let algorithm_sizes () =
+  (* RFC 9180, Sections 7.1 to 7.3. *)
+  List.iter
+    (fun (kem, expected) ->
+      Alcotest.(check int) "Nsecret" expected (Kem.secret_size kem))
+    [ (Kem.P256, 32); (Kem.P384, 48); (Kem.P521, 64); (Kem.X25519, 32) ];
+  List.iter
+    (fun (kdf, expected) ->
+      Alcotest.(check int) "Nh" expected (Kdf.hash_size kdf))
+    [ (Kdf.Hkdf_sha256, 32); (Kdf.Hkdf_sha384, 48); (Kdf.Hkdf_sha512, 64) ];
+  List.iter
+    (fun (aead, expected) ->
+      Alcotest.(check int) "Nk" expected (Aead.key_size aead);
+      Alcotest.(check int) "Nn" 12 (Aead.nonce_size aead);
+      Alcotest.(check int) "Nt" 16 (Aead.tag_size aead))
+    [
+      (Aead.Aes_128_gcm, 16);
+      (Aead.Aes_256_gcm, 32);
+      (Aead.Chacha20_poly1305, 32);
+    ]
+
+let expect_invalid_length label = function
+  | Error (Error.Invalid_length _) -> ()
+  | Ok _ -> Alcotest.failf "%s was accepted" label
+  | Error error ->
+      Alcotest.failf "%s: unexpected %s" label (error_to_string error)
+
+let unlabeled_kdf_bounds () =
+  List.iter
+    (fun kdf ->
+      let size = Kdf.hash_size kdf in
+      let prk = Kdf.extract kdf ~salt:"salt" "input keying material" in
+      Alcotest.(check int) "PRK length" size (String.length prk);
+      Alcotest.(check int)
+        "empty output" 0
+        (String.length (ok (Kdf.expand kdf ~prk ~info:"" 0)));
+      let longest = ok (Kdf.expand kdf ~prk ~info:"info" (255 * size)) in
+      Alcotest.(check int) "longest output" (255 * size) (String.length longest);
+      Alcotest.(check string)
+        "outputs share a prefix"
+        (String.sub longest 0 size)
+        (ok (Kdf.expand kdf ~prk ~info:"info" size));
+      expect_invalid_length "negative length"
+        (Kdf.expand kdf ~prk ~info:"" (-1));
+      expect_invalid_length "oversized length"
+        (Kdf.expand kdf ~prk ~info:"" ((255 * size) + 1));
+      expect_invalid_length "short PRK"
+        (Kdf.expand kdf ~prk:(String.sub prk 0 (size - 1)) ~info:"" size))
+    all_kdfs
+
+let single_shot_aead () =
+  List.iter
+    (fun aead ->
+      let key = String.make (Aead.key_size aead) '\x2a' in
+      let nonce = String.make (Aead.nonce_size aead) '\x07' in
+      List.iter
+        (fun (aad, plaintext) ->
+          let sealed = ok (Aead.seal aead ~key ~nonce ~aad ~plaintext) in
+          Alcotest.(check int)
+            "ciphertext length"
+            (String.length plaintext + Aead.tag_size aead)
+            (String.length sealed);
+          Alcotest.(check string)
+            "round trip" plaintext
+            (ok (Aead.open_ aead ~key ~nonce ~aad ~ciphertext:sealed));
+          let expect_open_error label ciphertext ~aad =
+            match Aead.open_ aead ~key ~nonce ~aad ~ciphertext with
+            | Error Error.Open_error -> ()
+            | Ok _ -> Alcotest.failf "%s was accepted" label
+            | Error error ->
+                Alcotest.failf "%s: unexpected %s" label (error_to_string error)
+          in
+          let tampered = Bytes.of_string sealed in
+          Bytes.set_uint8 tampered 0 (Bytes.get_uint8 tampered 0 lxor 1);
+          expect_open_error "tampered ciphertext"
+            (Bytes.unsafe_to_string tampered)
+            ~aad;
+          expect_open_error "wrong AAD" sealed ~aad:(aad ^ "x");
+          expect_open_error "truncated ciphertext"
+            (String.sub sealed 0 (String.length sealed - 1))
+            ~aad;
+          expect_open_error "shorter than a tag"
+            (String.make (Aead.tag_size aead - 1) '\000')
+            ~aad;
+          expect_open_error "empty ciphertext" "" ~aad)
+        [ ("", ""); ("aad", ""); ("", "message"); ("\000aad", "\000message") ];
+      let short_key = String.sub key 0 (String.length key - 1) in
+      let long_nonce = nonce ^ "\000" in
+      expect_invalid_length "short key on seal"
+        (Aead.seal aead ~key:short_key ~nonce ~aad:"" ~plaintext:"");
+      expect_invalid_length "long nonce on seal"
+        (Aead.seal aead ~key ~nonce:long_nonce ~aad:"" ~plaintext:"");
+      expect_invalid_length "short key on open"
+        (Aead.open_ aead ~key:short_key ~nonce ~aad:""
+           ~ciphertext:(String.make 16 '\000'));
+      expect_invalid_length "long nonce on open"
+        (Aead.open_ aead ~key ~nonce:long_nonce ~aad:""
+           ~ciphertext:(String.make 16 '\000')))
+    all_aeads
+
 let qcheck_round_trip =
   let generator = QCheck2.Gen.string_size (QCheck2.Gen.int_bound 1024) in
   QCheck2.Test.make ~name:"arbitrary binary messages round trip" ~count:100
@@ -721,6 +824,12 @@ let () =
             normalized_single_shot_error;
           Alcotest.test_case "adversarial mismatches" `Quick
             adversarial_mismatches;
+        ] );
+      ( "suite primitives",
+        [
+          Alcotest.test_case "algorithm sizes" `Quick algorithm_sizes;
+          Alcotest.test_case "unlabeled KDF bounds" `Quick unlabeled_kdf_bounds;
+          Alcotest.test_case "single-shot AEAD" `Quick single_shot_aead;
         ] );
       ( "properties",
         [

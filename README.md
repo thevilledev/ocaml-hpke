@@ -101,6 +101,21 @@ boundaries, prefer the single-shot `open_base` and `open_psk` functions; they
 normalize peer-controlled decapsulation and authentication failures to
 `Open_error`.
 
+## Building protocols on HPKE
+
+Protocols layered on HPKE often derive further keys from an exported secret
+with the suite's own KDF and AEAD; Oblivious HTTP
+([RFC 9458](https://www.rfc-editor.org/rfc/rfc9458.html)) encrypts its
+responses this way. The suite's unlabeled primitives are exposed so that a
+consumer does not repeat the identifier-to-algorithm dispatch:
+
+- `Kdf.extract` and `Kdf.expand` are plain RFC 5869 HKDF, without the labels
+  that HPKE's own key schedule adds.
+- `Aead.seal` and `Aead.open_` take an explicit key and nonce. Unlike a
+  context they cannot prevent nonce reuse; that is the caller's responsibility.
+- `Aead.key_size`, `Aead.nonce_size`, `Aead.tag_size`, `Kdf.hash_size`, and
+  `Kem.secret_size` report the RFC 9180 parameters Nk, Nn, Nt, Nh, and Nsecret.
+
 ## Development
 
 ```sh

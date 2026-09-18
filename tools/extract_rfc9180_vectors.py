@@ -40,6 +40,14 @@ COPIED_FIELDS = (
     "enc",
     "psk",
     "psk_id",
+    # Key-schedule intermediates: known answers for the unlabeled KDF and
+    # single-shot AEAD entry points.
+    "shared_secret",
+    "key_schedule_context",
+    "secret",
+    "key",
+    "base_nonce",
+    "exporter_secret",
     "exports",
 )
 

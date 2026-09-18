@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 — unreleased
+
+- Export the suite's unlabeled primitives for protocols layered on HPKE, such
+  as Oblivious HTTP (RFC 9458): `Kdf.extract` and `Kdf.expand` (plain RFC 5869
+  HKDF) and the single-shot `Aead.seal` and `Aead.open_` under an explicit key
+  and nonce. Wrong-sized keys, nonces, pseudorandom keys, and output lengths
+  are reported as `Invalid_length`.
+- Export the RFC 9180 parameters `Aead.key_size`, `Aead.nonce_size`,
+  `Aead.tag_size`, `Kdf.hash_size`, and `Kem.secret_size`.
+- Retain the key-schedule intermediates in the pinned RFC 9180 corpus and use
+  them and every encryption record as known answers for the new entry
+  points.
+- Keep the existing API and RFC 9180 wire behavior unchanged from 0.1.1.
+
 ## 0.1.1 — 2026-08-29
 
 - Expand known-answer coverage to all 48 supported Base and PSK combinations
