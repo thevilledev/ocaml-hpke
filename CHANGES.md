@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-09-18
 
 - Export the suite's unlabeled primitives for protocols layered on HPKE, such
   as Oblivious HTTP (RFC 9458): `Kdf.extract` and `Kdf.expand` (plain RFC 5869

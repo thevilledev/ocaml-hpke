@@ -9,13 +9,9 @@ elliptic-curve, hash, and AEAD primitives to Mirage Crypto, Digestif, and
 The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
 
-> **Release status:** `0.1.1` is for interoperability review and is not
-> production-ready. It has not received an independent cryptographic audit.
-> See [SECURITY.md](SECURITY.md) before using it with sensitive data.
+See [SECURITY.md](SECURITY.md) before using it with sensitive data.
 
 ## Installation
-
-Once `0.1.1` is available from the OPAM repository:
 
 ```sh
 opam install hpke
