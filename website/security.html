@@ -134,7 +134,7 @@
             </tr>
             <tr>
               <td>Fuzzing (Crowbar)</td>
-              <td>Key parsing across all five KEMs, receiver setup in all four modes on arbitrary encapsulations, arbitrary Auth-mode sender keys, and opening arbitrary ciphertexts. CI runs 1,000 iterations per push.</td>
+              <td>Key parsing across all five KEMs, receiver setup in all four modes on arbitrary encapsulations, arbitrary Auth-mode sender keys, and opening arbitrary ciphertexts. CI fuzzes briefly on every pull request and push to <code>main</code>, and for longer each week.</td>
             </tr>
             <tr>
               <td>Concurrency</td>

@@ -154,10 +154,10 @@ website/                this static documentation site</code></pre>
       </p>
 
       <table>
-        <caption>Jobs, on every push and pull request plus a weekly schedule</caption>
+        <caption>Jobs, on every pull request and push to <code>main</code> plus a weekly schedule</caption>
         <tbody>
           <tr><th scope="row"><code>test</code></th><td>Builds <code>@all @doc</code> and runs the suite with several OCaml versions on Linux and macOS.</td></tr>
-          <tr><th scope="row"><code>fuzz</code></th><td>Runs the Crowbar targets with a fixed seed, briefly on every push and pull request and for longer on the weekly schedule.</td></tr>
+          <tr><th scope="row"><code>fuzz</code></th><td>Runs the Crowbar targets with a fixed seed, briefly on every pull request and push to <code>main</code> and for longer on the weekly schedule.</td></tr>
           <tr><th scope="row"><code>packaging</code></th><td>Runs <code>opam lint</code>, then installs the package itself with <code>opam install</code>, tests and docs included.</td></tr>
           <tr><th scope="row"><code>hygiene</code></th><td><code>opam lint</code>, <code>dune fmt</code>, and a clean working tree.</td></tr>
           <tr><th scope="row"><code>lower-bounds</code></th><td>Installs the exact declared minimums from <code>hpke.opam</code> on the oldest supported OCaml and runs the suite against them.</td></tr>
