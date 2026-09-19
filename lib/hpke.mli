@@ -270,6 +270,57 @@ module Rfc9180 : sig
     ('capability Receiver.t, Error.t) result
   (** Establish a PSK-mode receiver context. *)
 
+  val setup_auth_sender :
+    rng:Mirage_crypto_rng.g ->
+    'capability Suite.t ->
+    recipient:Public_key.t ->
+    sender:Private_key.t ->
+    info:string ->
+    ('capability sender_setup, Error.t) result
+  (** Establish an Auth-mode sender context. [sender] is the sender's static
+      key, and a receiver set up with its public key opens only what the holder
+      of [sender] sealed. That is not a signature. Whoever holds the recipient's
+      private key can seal as any sender (key-compromise impersonation, RFC
+      9180, Section 9.1.1), so the recipient cannot prove to anyone else who
+      sealed a message. Where either matters, also sign the encapsulated key and
+      the ciphertexts. Returns {!Error.Key_mismatch} unless the suite and both
+      keys share one KEM. *)
+
+  val setup_auth_receiver :
+    'capability Suite.t ->
+    recipient:Private_key.t ->
+    sender:Public_key.t ->
+    encapsulated_key:string ->
+    info:string ->
+    ('capability Receiver.t, Error.t) result
+  (** Establish an Auth-mode receiver context for messages sealed by the holder
+      of the private key of [sender]. An invalid encapsulation is reported as
+      {!Error.Invalid_encapsulation}, and a [sender] key that fails validation,
+      such as a low-order X25519 or X448 value, as {!Error.Invalid_public_key}.
+      See {!setup_auth_sender} for what the authentication does not provide. *)
+
+  val setup_auth_psk_sender :
+    rng:Mirage_crypto_rng.g ->
+    'capability Suite.t ->
+    recipient:Public_key.t ->
+    sender:Private_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    ('capability sender_setup, Error.t) result
+  (** Establish an AuthPSK-mode sender context, which authenticates the sender
+      as {!setup_auth_sender} does and also mixes in a PSK. Impersonating the
+      sender then takes the PSK as well as the recipient's private key. *)
+
+  val setup_auth_psk_receiver :
+    'capability Suite.t ->
+    recipient:Private_key.t ->
+    sender:Public_key.t ->
+    psk:Psk.t ->
+    encapsulated_key:string ->
+    info:string ->
+    ('capability Receiver.t, Error.t) result
+  (** Establish an AuthPSK-mode receiver context. *)
+
   val seal_base :
     rng:Mirage_crypto_rng.g ->
     Suite.encryption Suite.t ->
@@ -311,6 +362,52 @@ module Rfc9180 : sig
     ciphertext:ciphertext ->
     (string, Error.t) result
   (** Open one PSK-mode message with normalized peer failure. *)
+
+  val seal_auth :
+    rng:Mirage_crypto_rng.g ->
+    Suite.encryption Suite.t ->
+    recipient:Public_key.t ->
+    sender:Private_key.t ->
+    info:string ->
+    aad:string ->
+    plaintext:string ->
+    (ciphertext, Error.t) result
+  (** Establish and seal one Auth-mode message. *)
+
+  val open_auth :
+    Suite.encryption Suite.t ->
+    recipient:Private_key.t ->
+    sender:Public_key.t ->
+    info:string ->
+    aad:string ->
+    ciphertext:ciphertext ->
+    (string, Error.t) result
+  (** Open one Auth-mode message sealed by the holder of the private key of
+      [sender]. Every failure other than {!Error.Key_mismatch} is reported as
+      {!Error.Open_error}, a message from any other sender included. *)
+
+  val seal_auth_psk :
+    rng:Mirage_crypto_rng.g ->
+    Suite.encryption Suite.t ->
+    recipient:Public_key.t ->
+    sender:Private_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    aad:string ->
+    plaintext:string ->
+    (ciphertext, Error.t) result
+  (** Establish and seal one AuthPSK-mode message. *)
+
+  val open_auth_psk :
+    Suite.encryption Suite.t ->
+    recipient:Private_key.t ->
+    sender:Public_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    aad:string ->
+    ciphertext:ciphertext ->
+    (string, Error.t) result
+  (** Open one AuthPSK-mode message with normalized peer failure. *)
 end
 
 (**/**)
@@ -333,6 +430,23 @@ module Private : sig
     'capability Suite.t ->
     ephemeral:Private_key.t ->
     recipient:Public_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    ('capability Rfc9180.sender_setup, Error.t) result
+
+  val setup_auth_sender_with_ephemeral :
+    'capability Suite.t ->
+    ephemeral:Private_key.t ->
+    recipient:Public_key.t ->
+    sender:Private_key.t ->
+    info:string ->
+    ('capability Rfc9180.sender_setup, Error.t) result
+
+  val setup_auth_psk_sender_with_ephemeral :
+    'capability Suite.t ->
+    ephemeral:Private_key.t ->
+    recipient:Public_key.t ->
+    sender:Private_key.t ->
     psk:Psk.t ->
     info:string ->
     ('capability Rfc9180.sender_setup, Error.t) result

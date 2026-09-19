@@ -1,10 +1,10 @@
 # hpke
 
 `hpke` is an idiomatic OCaml implementation of Hybrid Public Key Encryption
-([RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html)). It exposes Base and
-PSK modes under the explicitly versioned `Hpke.Rfc9180` module and delegates
-elliptic-curve, hash, and AEAD primitives to Mirage Crypto, `curve448`,
-Digestif, and `kdf`.
+([RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html)). It exposes the
+Base, PSK, Auth, and AuthPSK modes under the explicitly versioned
+`Hpke.Rfc9180` module and delegates elliptic-curve, hash, and AEAD primitives
+to Mirage Crypto, `curve448`, Digestif, and `kdf`.
 
 The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
@@ -29,12 +29,11 @@ Usage, ciphersuites, the security model, and development notes:
 | KEM | P-256, P-384, P-521, X25519, X448 DHKEM |
 | KDF | HKDF-SHA-256, HKDF-SHA-384, HKDF-SHA-512 |
 | AEAD | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, export-only |
-| Modes | RFC 9180 Base and PSK |
+| Modes | RFC 9180 Base, PSK, Auth, and AuthPSK |
 
 | Feature scope | Status |
 | --- | --- |
-| RFC 9180 Base, PSK, export-only, and the algorithms above | Implemented |
-| Auth and AuthPSK modes | Deferred |
+| RFC 9180 Base, PSK, Auth, AuthPSK, export-only, and the algorithms above | Implemented |
 | Post-quantum and hybrid KEMs | Deferred |
 | HPKE-bis or another successor standard | Deferred to a new versioned module |
 | Application wire framing | Deferred to applications |
@@ -101,6 +100,24 @@ PSKs are constructed with `Psk.create ~secret ~id`. Construction rejects
 secrets shorter than 32 bytes and empty identifiers. This is only a length
 check; it cannot establish that a secret has adequate entropy.
 
+The Auth and AuthPSK modes also authenticate the sender with a static KEM key
+pair. The sender passes its private key and the recipient the sender's public
+key, both as `~sender`:
+
+```ocaml
+Rfc9180.seal_auth ~rng suite ~recipient:recipient_public
+  ~sender:sender_private ~info ~aad ~plaintext
+
+Rfc9180.open_auth suite ~recipient:recipient_private
+  ~sender:sender_public ~info ~aad ~ciphertext
+```
+
+The message opens only as coming from the holder of that key, but this is not
+a signature. Whoever holds the recipient's private key can seal as any sender,
+so a recipient cannot prove to anyone else who sent a message: see
+[SECURITY.md](SECURITY.md). The successor draft of HPKE drops both modes; they
+stay in `Hpke.Rfc9180`, whose wire behavior does not change.
+
 ## Context rules
 
 Sender contexts only seal and receiver contexts only open. Successful
@@ -111,9 +128,9 @@ not retry concurrent calls without application-level ordering: the caller must
 know which operation consumed the next sequence number.
 
 HPKE contexts do not recover from message loss or reordering. For protocol
-boundaries, prefer the single-shot `open_base` and `open_psk` functions; they
-normalize peer-controlled decapsulation and authentication failures to
-`Open_error`.
+boundaries, prefer the single-shot `open_base`, `open_psk`, `open_auth`, and
+`open_auth_psk` functions; they normalize peer-controlled decapsulation and
+authentication failures to `Open_error`.
 
 ## Building protocols on HPKE
 

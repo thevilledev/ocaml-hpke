@@ -155,19 +155,14 @@ let exporter =
         <tbody>
           <tr><td>Base</td><td class="n">0x00</td><td>Implemented.</td></tr>
           <tr><td>PSK</td><td class="n">0x01</td><td>Implemented. Secrets of at least 32 bytes, non-empty identifier.</td></tr>
-          <tr><td>Auth</td><td class="n">0x02</td><td>Not part of the initial surface.</td></tr>
-          <tr><td>AuthPSK</td><td class="n">0x03</td><td>Not part of the initial surface.</td></tr>
+          <tr><td>Auth</td><td class="n">0x02</td><td>Implemented. The sender seals with its static private key; the recipient opens with that key's public half.</td></tr>
+          <tr><td>AuthPSK</td><td class="n">0x03</td><td>Implemented. Auth and PSK together.</td></tr>
         </tbody>
       </table>
 
       <h2 id="omissions">Deliberate omissions</h2>
 
       <ul>
-        <li>
-          <strong>Auth and AuthPSK.</strong> Sender authentication is not in the
-          initial surface. Adding it later adds constructors; it does not change
-          the behavior of the modes above.
-        </li>
         <li>
           <strong>A wire format.</strong> <code>encapsulated_key</code> and
           <code>ciphertext</code> stay separate fields. The library will not
@@ -193,7 +188,7 @@ let exporter =
           <tr><th scope="row">Public keys</th><td>Exact encoded length. NIST keys must start with the uncompressed SEC1 marker and lie on the curve. X25519 and X448 low-order values are rejected when the key is used.</td></tr>
           <tr><th scope="row">Private keys</th><td>Exact encoded length. NIST scalars must be non-zero and below the curve order, compared in constant time. X25519 and X448 scalars are clamped on parse and on output.</td></tr>
           <tr><th scope="row">Encapsulated keys</th><td>Parsed as a public key for the suite's KEM. Context-level setup reports the failure structurally; single-shot opens normalize it.</td></tr>
-          <tr><th scope="row">Suite agreement</th><td>A key whose KEM differs from the suite's KEM yields <code>Key_mismatch</code> before any cryptography.</td></tr>
+          <tr><th scope="row">Suite agreement</th><td>A recipient or sender key whose KEM differs from the suite's KEM yields <code>Key_mismatch</code> before any cryptography.</td></tr>
           <tr><th scope="row">PSKs</th><td>Secret of at least 32 bytes and a non-empty identifier. A length check cannot establish entropy.</td></tr>
           <tr><th scope="row">Derivation</th><td><code>derive_key_pair</code> follows RFC 9180, including rejection sampling for the NIST curves; exhausting it yields <code>Derive_key_pair_failure</code>.</td></tr>
         </tbody>
@@ -215,6 +210,13 @@ let exporter =
         changed by a future HPKE standard. A successor standard can be added as
         a second versioned module, so applications choose when to move rather
         than discovering that an upgrade changed what their peers see.
+      </p>
+
+      <p>
+        The successor draft, <code>draft-ietf-hpke-hpke</code>, removes the
+        Auth and AuthPSK modes and reserves their identifiers. They stay in
+        <code>Hpke.Rfc9180</code>; a module for the successor standard would
+        not offer them.
       </p>
     </main>
 

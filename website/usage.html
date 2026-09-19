@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Install hpke and use RFC 9180 Base and PSK modes: keys, single-shot messages, stateful contexts, and secret export.">
+    <meta name="description" content="Install hpke and use the RFC 9180 modes: keys, single-shot messages, pre-shared keys, authenticated senders, stateful contexts, and secret export.">
     <meta name="theme-color" content="#ffffff">
     <meta property="og:type" content="website">
     <meta property="og:title" content="Using hpke">
-    <meta property="og:description" content="Keys, single-shot messages, stateful contexts, secret export, and errors.">
+    <meta property="og:description" content="Keys, single-shot messages, authenticated senders, stateful contexts, secret export, and errors.">
     <meta property="og:url" content="https://ville.dev/ocaml-hpke/usage.html">
     <meta name="twitter:card" content="summary">
     <meta name="twitter:title" content="Using hpke">
-    <meta name="twitter:description" content="Keys, single-shot messages, stateful contexts, secret export, and errors.">
+    <meta name="twitter:description" content="Keys, single-shot messages, authenticated senders, stateful contexts, secret export, and errors.">
     <link rel="canonical" href="https://ville.dev/ocaml-hpke/usage.html">
     <link rel="stylesheet" href="styles.css">
     <title>Using hpke</title>
@@ -188,6 +188,46 @@ Rfc9180.open_psk suite ~recipient:recipient_private ~psk
         key-derivation step rather than from a passphrase.
       </p>
 
+      <h2 id="auth">Authenticated senders</h2>
+
+      <p>
+        Auth mode also proves to the recipient that the message came from the
+        holder of a static private key. The sender passes its own private key
+        as <code>~sender</code>, and the recipient passes the public half of
+        that key:
+      </p>
+
+      <pre><code>let* sealed =
+  Rfc9180.seal_auth ~rng suite ~recipient:recipient_public
+    ~sender:sender_private ~info:"application-v1"
+    ~aad:"message-metadata" ~plaintext:"secret payload"
+in
+Rfc9180.open_auth suite ~recipient:recipient_private
+  ~sender:sender_public ~info:"application-v1"
+  ~aad:"message-metadata" ~ciphertext:sealed</code></pre>
+
+      <p>
+        A message from any other sender fails to open, with the same
+        <code>Open_error</code> as a tampered one. AuthPSK mode adds a
+        <code>~psk</code> through <code>seal_auth_psk</code> and
+        <code>open_auth_psk</code>. For a stream of messages from one sender,
+        <code>setup_auth_sender</code> and <code>setup_auth_receiver</code>, or
+        their AuthPSK counterparts, set up contexts as in
+        <a href="#contexts">many messages</a>. Both keys must belong to the
+        suite's KEM; either of another KEM is a <code>Key_mismatch</code>.
+      </p>
+
+      <p>
+        This is not a signature. Whoever holds the recipient's private key, and
+        in AuthPSK mode the PSK as well, can seal a message that opens as coming
+        from any sender. For the same reason the recipient cannot prove to
+        anyone else who sent a message. Where either matters, also sign the
+        encapsulated key and ciphertext; the
+        <a href="security.html#limits">security model</a> has more. The
+        successor draft of HPKE removes both modes, so they exist only under
+        <code>Hpke.Rfc9180</code>.
+      </p>
+
       <h2 id="contexts">Many messages</h2>
 
       <p>
@@ -339,10 +379,10 @@ Aead.seal key ~nonce ~aad:"" ~plaintext</code></pre>
           <thead><tr><th scope="col">Constructor</th><th scope="col">Returned when</th></tr></thead>
           <tbody>
             <tr><td><code>Unsupported_algorithm</code></td><td>An integer codepoint outside the closed registry reached <code>of_int</code>.</td></tr>
-            <tr><td><code>Invalid_public_key</code></td><td>Wrong encoded length, a non-uncompressed SEC1 point, or a point off the curve.</td></tr>
+            <tr><td><code>Invalid_public_key</code></td><td>Wrong encoded length, a non-uncompressed SEC1 point, or a point off the curve. When a recipient key is used at sender setup, or a sender key at Auth-mode receiver setup, also an X25519 or X448 low-order value.</td></tr>
             <tr><td><code>Invalid_private_key</code></td><td>Wrong encoded length, or a scalar outside the valid range.</td></tr>
             <tr><td><code>Invalid_encapsulation</code></td><td>A malformed encapsulated key at context-level receiver setup.</td></tr>
-            <tr><td><code>Key_mismatch</code></td><td>A key's KEM differs from the suite's KEM.</td></tr>
+            <tr><td><code>Key_mismatch</code></td><td>A recipient or sender key's KEM differs from the suite's KEM.</td></tr>
             <tr><td><code>Derive_key_pair_failure</code></td><td>Rejection sampling did not find a valid scalar for a NIST curve.</td></tr>
             <tr><td><code>Invalid_psk</code></td><td>A secret shorter than 32 bytes, or an empty identifier.</td></tr>
             <tr><td><code>Invalid_length</code></td><td>Deterministic derivation was given input a primitive refused by length, or an unlabeled KDF or single-shot AEAD call was given a key, nonce, or length of the wrong size.</td></tr>

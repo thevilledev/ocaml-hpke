@@ -581,20 +581,35 @@ let extract_and_expand kem ~dh ~kem_context =
   Labeled_kdf.kem_expand kem ~prk:eae_prk ~label:"shared_secret"
     ~info:kem_context (Kem.secret_size kem)
 
-let encap_with ~ephemeral recipient =
+(* [sender] is the sender's static key in the authenticated modes. AuthEncap and
+   AuthDecap (RFC 9180, Section 4.1) append an exchange with it to the ephemeral
+   exchange, and its public key to the KEM context. Without it both are empty,
+   which leaves Encap and Decap. *)
+let encap_with ~ephemeral ~sender recipient =
   let kem = Public_key.kem recipient in
-  let* dh_value = dh ephemeral recipient in
+  let* ephemeral_dh = dh ephemeral recipient in
+  let* static_dh, sender_public =
+    match sender with
+    | None -> Ok ("", "")
+    | Some sender ->
+        let* static_dh = dh sender recipient in
+        Ok (static_dh, Public_key.to_bytes (Private_key.public_key sender))
+  in
   let encapsulated_key =
     Public_key.to_bytes (Private_key.public_key ephemeral)
   in
-  let kem_context = encapsulated_key ^ Public_key.to_bytes recipient in
-  Ok (extract_and_expand kem ~dh:dh_value ~kem_context, encapsulated_key)
+  let kem_context =
+    encapsulated_key ^ Public_key.to_bytes recipient ^ sender_public
+  in
+  Ok
+    ( extract_and_expand kem ~dh:(ephemeral_dh ^ static_dh) ~kem_context,
+      encapsulated_key )
 
-let encap ~rng recipient =
+let encap ~rng ~sender recipient =
   let* ephemeral, _ = generate_key_pair ~rng (Public_key.kem recipient) in
-  encap_with ~ephemeral recipient
+  encap_with ~ephemeral ~sender recipient
 
-let decap recipient ~encapsulated_key =
+let decap recipient ~sender ~encapsulated_key =
   let kem = Private_key.kem recipient in
   let encapsulated =
     match Public_key.of_bytes ~kem encapsulated_key with
@@ -604,17 +619,28 @@ let decap recipient ~encapsulated_key =
     | Error error -> Error error
   in
   let* encapsulated = encapsulated in
-  let dh_value =
+  let ephemeral_dh =
     match dh recipient encapsulated with
     | Error (Error.Invalid_public_key reason) ->
         Error (Error.Invalid_encapsulation reason)
     | result -> result
   in
-  let* dh_value = dh_value in
-  let kem_context =
-    encapsulated_key ^ Public_key.to_bytes (Private_key.public_key recipient)
+  let* ephemeral_dh = ephemeral_dh in
+  (* A sender key that fails validation is the caller's input, not the peer's
+     encapsulation, so it stays an invalid public key. *)
+  let* static_dh, sender_public =
+    match sender with
+    | None -> Ok ("", "")
+    | Some sender ->
+        let* static_dh = dh recipient sender in
+        Ok (static_dh, Public_key.to_bytes sender)
   in
-  Ok (extract_and_expand kem ~dh:dh_value ~kem_context)
+  let kem_context =
+    encapsulated_key
+    ^ Public_key.to_bytes (Private_key.public_key recipient)
+    ^ sender_public
+  in
+  Ok (extract_and_expand kem ~dh:(ephemeral_dh ^ static_dh) ~kem_context)
 
 module Rfc9180 = struct
   type encryption_state = {
@@ -758,11 +784,24 @@ module Rfc9180 = struct
   }
 
   type ciphertext = { encapsulated_key : string; ciphertext : string }
-  type mode = Base | Psk_mode of Psk.t
 
-  let key_schedule : type capability.
+  (* ['key] is the half of the sender's static key that a role holds: private
+     when sending and public when receiving. A mode that needs a PSK or a sender
+     key carries it, so the inconsistent inputs that VerifyPSKInputs rejects
+     (RFC 9180, Section 5.1) cannot be expressed. *)
+  type 'key mode =
+    | Base
+    | Psk_mode of Psk.t
+    | Auth of 'key
+    | Auth_psk of 'key * Psk.t
+
+  let sender_key = function
+    | Base | Psk_mode _ -> None
+    | Auth key | Auth_psk (key, _) -> Some key
+
+  let key_schedule : type capability key.
       capability Suite.t ->
-      mode ->
+      key mode ->
       shared_secret:string ->
       info:string ->
       capability context =
@@ -773,6 +812,8 @@ module Rfc9180 = struct
       match mode with
       | Base -> (Util.byte 0, "", "")
       | Psk_mode psk -> (Util.byte 1, psk.Psk.secret, psk.Psk.id)
+      | Auth _ -> (Util.byte 2, "", "")
+      | Auth_psk (_, psk) -> (Util.byte 3, psk.Psk.secret, psk.Psk.id)
     in
     let psk_id_hash =
       Labeled_kdf.extract ~kdf ~suite_id ~salt:"" ~label:"psk_id_hash" psk_id
@@ -820,17 +861,23 @@ module Rfc9180 = struct
             busy = Atomic.make false;
           }
 
-  let check_public_key suite recipient =
-    if Suite.kem suite = Public_key.kem recipient then Ok ()
+  let check_public_key suite key =
+    if Suite.kem suite = Public_key.kem key then Ok ()
     else Error Error.Key_mismatch
 
-  let check_private_key suite recipient =
-    if Suite.kem suite = Private_key.kem recipient then Ok ()
+  let check_private_key suite key =
+    if Suite.kem suite = Private_key.kem key then Ok ()
     else Error Error.Key_mismatch
+
+  let check_sender_key check suite mode =
+    match sender_key mode with None -> Ok () | Some key -> check suite key
 
   let setup_sender_inner ~encap suite ~recipient ~mode ~info =
     let* () = check_public_key suite recipient in
-    let* shared_secret, encapsulated_key = encap recipient in
+    let* () = check_sender_key check_private_key suite mode in
+    let* shared_secret, encapsulated_key =
+      encap ~sender:(sender_key mode) recipient
+    in
     let context = key_schedule suite mode ~shared_secret ~info in
     Ok { encapsulated_key; context = Sender.Sender context }
 
@@ -845,7 +892,10 @@ module Rfc9180 = struct
 
   let setup_receiver_inner suite ~recipient ~encapsulated_key ~mode ~info =
     let* () = check_private_key suite recipient in
-    let* shared_secret = decap recipient ~encapsulated_key in
+    let* () = check_sender_key check_public_key suite mode in
+    let* shared_secret =
+      decap recipient ~sender:(sender_key mode) ~encapsulated_key
+    in
     let context = key_schedule suite mode ~shared_secret ~info in
     Ok (Receiver.Receiver context)
 
@@ -865,10 +915,28 @@ module Rfc9180 = struct
   let setup_psk_receiver suite ~recipient ~psk ~encapsulated_key ~info =
     setup_receiver suite ~recipient ~encapsulated_key ~mode:(Psk_mode psk) ~info
 
-  let seal_base ~rng suite ~recipient ~info ~aad ~plaintext =
-    let* setup = setup_base_sender ~rng suite ~recipient ~info in
+  let setup_auth_sender ~rng suite ~recipient ~sender ~info =
+    setup_sender ~rng suite ~recipient ~mode:(Auth sender) ~info
+
+  let setup_auth_receiver suite ~recipient ~sender ~encapsulated_key ~info =
+    setup_receiver suite ~recipient ~encapsulated_key ~mode:(Auth sender) ~info
+
+  let setup_auth_psk_sender ~rng suite ~recipient ~sender ~psk ~info =
+    setup_sender ~rng suite ~recipient ~mode:(Auth_psk (sender, psk)) ~info
+
+  let setup_auth_psk_receiver suite ~recipient ~sender ~psk ~encapsulated_key
+      ~info =
+    setup_receiver suite ~recipient ~encapsulated_key
+      ~mode:(Auth_psk (sender, psk))
+      ~info
+
+  let seal_once setup ~aad ~plaintext =
+    let* setup = setup in
     let* ciphertext = Sender.seal setup.context ~aad ~plaintext in
     Ok { encapsulated_key = setup.encapsulated_key; ciphertext }
+
+  let seal_base ~rng suite ~recipient ~info ~aad ~plaintext =
+    seal_once (setup_base_sender ~rng suite ~recipient ~info) ~aad ~plaintext
 
   let normalized_open setup ~aad ~ciphertext =
     match setup with
@@ -886,13 +954,35 @@ module Rfc9180 = struct
       ~aad ~ciphertext:ciphertext.ciphertext
 
   let seal_psk ~rng suite ~recipient ~psk ~info ~aad ~plaintext =
-    let* setup = setup_psk_sender ~rng suite ~recipient ~psk ~info in
-    let* ciphertext = Sender.seal setup.context ~aad ~plaintext in
-    Ok { encapsulated_key = setup.encapsulated_key; ciphertext }
+    seal_once
+      (setup_psk_sender ~rng suite ~recipient ~psk ~info)
+      ~aad ~plaintext
 
   let open_psk suite ~recipient ~psk ~info ~aad ~ciphertext =
     normalized_open
       (setup_psk_receiver suite ~recipient ~psk
+         ~encapsulated_key:ciphertext.encapsulated_key ~info)
+      ~aad ~ciphertext:ciphertext.ciphertext
+
+  let seal_auth ~rng suite ~recipient ~sender ~info ~aad ~plaintext =
+    seal_once
+      (setup_auth_sender ~rng suite ~recipient ~sender ~info)
+      ~aad ~plaintext
+
+  let open_auth suite ~recipient ~sender ~info ~aad ~ciphertext =
+    normalized_open
+      (setup_auth_receiver suite ~recipient ~sender
+         ~encapsulated_key:ciphertext.encapsulated_key ~info)
+      ~aad ~ciphertext:ciphertext.ciphertext
+
+  let seal_auth_psk ~rng suite ~recipient ~sender ~psk ~info ~aad ~plaintext =
+    seal_once
+      (setup_auth_psk_sender ~rng suite ~recipient ~sender ~psk ~info)
+      ~aad ~plaintext
+
+  let open_auth_psk suite ~recipient ~sender ~psk ~info ~aad ~ciphertext =
+    normalized_open
+      (setup_auth_psk_receiver suite ~recipient ~sender ~psk
          ~encapsulated_key:ciphertext.encapsulated_key ~info)
       ~aad ~ciphertext:ciphertext.ciphertext
 end
@@ -905,4 +995,15 @@ module Private = struct
   let setup_psk_sender_with_ephemeral suite ~ephemeral ~recipient ~psk ~info =
     Rfc9180.setup_sender_with_ephemeral ~ephemeral suite ~recipient
       ~mode:(Rfc9180.Psk_mode psk) ~info
+
+  let setup_auth_sender_with_ephemeral suite ~ephemeral ~recipient ~sender ~info
+      =
+    Rfc9180.setup_sender_with_ephemeral ~ephemeral suite ~recipient
+      ~mode:(Rfc9180.Auth sender) ~info
+
+  let setup_auth_psk_sender_with_ephemeral suite ~ephemeral ~recipient ~sender
+      ~psk ~info =
+    Rfc9180.setup_sender_with_ephemeral ~ephemeral suite ~recipient
+      ~mode:(Rfc9180.Auth_psk (sender, psk))
+      ~info
 end

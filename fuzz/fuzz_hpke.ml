@@ -33,6 +33,7 @@ type suite_case = {
   name : string;
   suite : Suite.encryption Suite.t;
   recipient : Private_key.t;
+  sender : Public_key.t;
   encapsulated_key : string;
 }
 
@@ -42,10 +43,11 @@ let suite_cases =
     (List.map
        (fun kem ->
          let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+         let _, sender = ok (generate_key_pair ~rng:generator kem) in
          List.map
            (fun aead ->
              let suite = Suite.create ~kem ~kdf:(kdf_for_kem kem) ~aead in
-             let sender =
+             let setup =
                ok
                  (Rfc9180.setup_base_sender ~rng:generator suite
                     ~recipient:public ~info:"encapsulation")
@@ -54,30 +56,47 @@ let suite_cases =
                name = kem_name kem ^ "/" ^ aead_name aead;
                suite;
                recipient;
-               encapsulated_key = sender.encapsulated_key;
+               sender;
+               encapsulated_key = setup.encapsulated_key;
              })
            all_aeads)
        all_kems)
 
-type mode = Base | Psk
+type mode = Base | Psk | Auth | Auth_psk
 
 let mode_cases =
   List.concat
     (List.map
-       (fun suite_case -> [ (suite_case, Base); (suite_case, Psk) ])
+       (fun suite_case ->
+         [
+           (suite_case, Base);
+           (suite_case, Psk);
+           (suite_case, Auth);
+           (suite_case, Auth_psk);
+         ])
        suite_cases)
 
 let fuzz_psk secret id =
   ok (Psk.create ~secret:(String.make 32 '\000' ^ secret) ~id:("\000" ^ id))
 
 let setup_receiver suite_case mode ~encapsulated_key ~info ~psk =
+  let { suite; recipient; sender; _ } = suite_case in
   match mode with
-  | Base ->
-      Rfc9180.setup_base_receiver suite_case.suite
-        ~recipient:suite_case.recipient ~encapsulated_key ~info
+  | Base -> Rfc9180.setup_base_receiver suite ~recipient ~encapsulated_key ~info
   | Psk ->
-      Rfc9180.setup_psk_receiver suite_case.suite
-        ~recipient:suite_case.recipient ~psk ~encapsulated_key ~info
+      Rfc9180.setup_psk_receiver suite ~recipient ~psk ~encapsulated_key ~info
+  | Auth ->
+      Rfc9180.setup_auth_receiver suite ~recipient ~sender ~encapsulated_key
+        ~info
+  | Auth_psk ->
+      Rfc9180.setup_auth_psk_receiver suite ~recipient ~sender ~psk
+        ~encapsulated_key ~info
+
+(* Pads or truncates to [size], so that most inputs reach the key-exchange
+   validation instead of failing the length check. *)
+let fit size bytes =
+  if String.length bytes >= size then String.sub bytes 0 size
+  else bytes ^ String.make (size - String.length bytes) '\000'
 
 let () =
   Crowbar.add_test ~name:"key encodings"
@@ -126,4 +145,27 @@ let () =
       | Ok receiver ->
           ignore (Rfc9180.Receiver.open_ receiver ~aad ~ciphertext);
           ignore
-            (Rfc9180.Receiver.export receiver ~context:exporter_context ~length))
+            (Rfc9180.Receiver.export receiver ~context:exporter_context ~length));
+  Crowbar.add_test ~name:"sender keys"
+    [ Crowbar.range (List.length suite_cases); Crowbar.bytes; Crowbar.bytes ]
+    (fun selector encoding ciphertext ->
+      let suite_case = List.nth suite_cases selector in
+      let { suite; recipient; encapsulated_key; _ } = suite_case in
+      let kem = Suite.kem suite in
+      match
+        Public_key.of_bytes ~kem (fit (Kem.public_key_size kem) encoding)
+      with
+      | Error _ -> ()
+      | Ok sender -> (
+          ignore
+            (Rfc9180.open_auth suite ~recipient ~sender ~info:"" ~aad:""
+               ~ciphertext:{ Rfc9180.encapsulated_key; ciphertext });
+          (* The encapsulation is valid, so a failure can only be the sender
+             key's. *)
+          match
+            Rfc9180.setup_auth_receiver suite ~recipient ~sender
+              ~encapsulated_key ~info:""
+          with
+          | Ok _ | Error (Error.Invalid_public_key _) -> ()
+          | Error error ->
+              Crowbar.failf "%s sender key: %a" suite_case.name Error.pp error))
