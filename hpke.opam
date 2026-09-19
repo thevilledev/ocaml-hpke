@@ -28,14 +28,6 @@ depends: [
   "odoc" {with-doc}
   "ocamlformat" {with-dev-setup & = "0.29.0"}
 ]
-# Temporary: curve448 is not yet in the opam repository. Remove this field once
-# it is published there; the repository does not accept packages that pin.
-pin-depends: [
-  [
-    "curve448.0.1.0"
-    "git+https://github.com/thevilledev/ocaml-curve448.git#v0.1.0"
-  ]
-]
 build: [
   ["dune" "subst"] {dev}
   ["dune" "build" "-p" name "-j" jobs]
