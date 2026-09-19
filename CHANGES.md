@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0 — unreleased
+
+- Add `Kem.X448`, DHKEM(X448, HKDF-SHA512), identifier `0x0021`, with 56-byte
+  keys and a 64-byte shared secret. Key derivation and clamping follow the
+  X25519 path with the X448 rules of RFC 7748, and a low-order public value is
+  rejected when it is used. The new constructor breaks exhaustive matches on
+  `Kem.id`, which is why this is not a patch release.
+- Depend on [`curve448`](https://github.com/thevilledev/ocaml-curve448) for
+  the X448 primitive. `hpke` depends on the plain `curve448` library, so the
+  pure OCaml implementation links by default and an application selects the C
+  one by adding `curve448.c` to its own libraries. `curve448` needs a 64-bit
+  OCaml, so `hpke` is no longer installable on 32-bit architectures, whichever
+  KEM an application uses.
+- Grow the pinned RFC 9180 corpus from 48 to 64 cases with the 16 X448 Base
+  and PSK vectors of the same CFRG commit. The 48 existing cases are unchanged.
+- Parse private keys through one exhaustive match on the KEM. The previous
+  wildcard would have let a new KEM skip clamping without a compiler warning.
+- Check X25519 and X448 private-key clamping against literal bytes. The vector
+  corpus cannot: it compares serializations that have both passed through the
+  library's own clamp, and the primitives clamp again when they use a scalar.
+- Keep the RFC 9180 wire behavior of the existing KEMs unchanged from 0.2.0.
+
 ## 0.2.0 — 2026-09-18
 
 - Export the suite's unlabeled primitives for protocols layered on HPKE, such

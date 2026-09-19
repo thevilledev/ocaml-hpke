@@ -58,8 +58,18 @@ let ( let* ) = Result.bind</code></pre>
 
       <p>
         OCaml 4.14+ and dune 3.12+ are required. The package pulls in Mirage
-        Crypto, Digestif, <code>kdf</code>, and <code>eqaf</code>; it contains no
-        primitive implementations of its own.
+        Crypto, <code>curve448</code>, Digestif, <code>kdf</code>, and
+        <code>eqaf</code>; it contains no primitive implementations of its own.
+      </p>
+
+      <p>
+        X448 comes from <code>curve448</code>, which implements its arithmetic
+        twice and lets the final executable choose. Depending on
+        <code>hpke</code> alone links the pure OCaml implementation; add
+        <code>curve448.c</code> to the executable's libraries for the C one,
+        which is two to three times faster. Both behave identically.
+        <code>curve448</code> needs a 64-bit OCaml, so 32-bit architectures are
+        not supported.
       </p>
 
       <h2 id="randomness">Randomness</h2>

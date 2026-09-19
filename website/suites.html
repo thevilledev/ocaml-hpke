@@ -46,9 +46,9 @@ let exporter =
   Suite.export_only ~kem:Kem.P384 ~kdf:Kdf.Hkdf_sha384</code></pre>
 
       <p>
-        Four KEMs, three KDFs, and three AEADs give 36 encryption suites; every
+        Five KEMs, three KDFs, and three AEADs give 45 encryption suites; every
         one of them is round-tripped by the test suite in Base mode. Dropping
-        the AEAD gives 12 further export-only suites.
+        the AEAD gives 15 further export-only suites.
       </p>
 
       <h2 id="kem">KEM</h2>
@@ -71,6 +71,7 @@ let exporter =
             <tr><td><code>Kem.P384</code></td><td>DHKEM(P-384, HKDF-SHA384)</td><td class="n">0x0011</td><td class="n">97</td><td class="n">48</td><td class="n">48</td></tr>
             <tr><td><code>Kem.P521</code></td><td>DHKEM(P-521, HKDF-SHA512)</td><td class="n">0x0012</td><td class="n">133</td><td class="n">66</td><td class="n">64</td></tr>
             <tr><td><code>Kem.X25519</code></td><td>DHKEM(X25519, HKDF-SHA256)</td><td class="n">0x0020</td><td class="n">32</td><td class="n">32</td><td class="n">32</td></tr>
+            <tr><td><code>Kem.X448</code></td><td>DHKEM(X448, HKDF-SHA512)</td><td class="n">0x0021</td><td class="n">56</td><td class="n">56</td><td class="n">64</td></tr>
           </tbody>
         </table>
       </div>
@@ -163,11 +164,6 @@ let exporter =
 
       <ul>
         <li>
-          <strong>X448.</strong> There is no suitable maintained primitive in
-          the selected OCaml backend. An unmaintained one would be worse than an
-          absent suite.
-        </li>
-        <li>
           <strong>Auth and AuthPSK.</strong> Sender authentication is not in the
           initial surface. Adding it later adds constructors; it does not change
           the behavior of the modes above.
@@ -194,8 +190,8 @@ let exporter =
       <table>
         <caption>What is checked, and where</caption>
         <tbody>
-          <tr><th scope="row">Public keys</th><td>Exact encoded length. NIST keys must start with the uncompressed SEC1 marker and lie on the curve. X25519 low-order values are rejected when the key is used.</td></tr>
-          <tr><th scope="row">Private keys</th><td>Exact encoded length. NIST scalars must be non-zero and below the curve order, compared in constant time. X25519 scalars are clamped on parse and on output.</td></tr>
+          <tr><th scope="row">Public keys</th><td>Exact encoded length. NIST keys must start with the uncompressed SEC1 marker and lie on the curve. X25519 and X448 low-order values are rejected when the key is used.</td></tr>
+          <tr><th scope="row">Private keys</th><td>Exact encoded length. NIST scalars must be non-zero and below the curve order, compared in constant time. X25519 and X448 scalars are clamped on parse and on output.</td></tr>
           <tr><th scope="row">Encapsulated keys</th><td>Parsed as a public key for the suite's KEM. Context-level setup reports the failure structurally; single-shot opens normalize it.</td></tr>
           <tr><th scope="row">Suite agreement</th><td>A key whose KEM differs from the suite's KEM yields <code>Key_mismatch</code> before any cryptography.</td></tr>
           <tr><th scope="row">PSKs</th><td>Secret of at least 32 bytes and a non-empty identifier. A length check cannot establish entropy.</td></tr>

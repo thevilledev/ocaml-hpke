@@ -6,8 +6,8 @@ machine-readable source is pinned at CFRG commit
 [`5f503c564da00b0687b3de75f1dfbdfc4079ad31`](https://github.com/cfrg/draft-irtf-cfrg-hpke/blob/5f503c564da00b0687b3de75f1dfbdfc4079ad31/test-vectors.json).
 
 `rfc9180-supported.json` is a reproducible reduction of that machine-readable
-source. It contains all 48 combinations supported by this library and present
-in the RFC corpus: Base and PSK modes over P-256, P-521, and X25519; the
+source. It contains all 64 combinations supported by this library and present
+in the RFC corpus: Base and PSK modes over P-256, P-521, X25519, and X448; the
 SHA-256 and SHA-512 KDFs; and every RFC AEAD including export-only. Most
 combinations retain the first three encryption records. Three representative
 suites retain all 257 records so that sequence numbers crossing the one-byte
@@ -32,7 +32,7 @@ python3 tools/extract_rfc9180_vectors.py test-vectors.json \
 ```
 
 The generated file records the source URL, commit, and SHA-256 digest. The
-extractor fails unless it selects exactly 48 vectors and three full sequences.
+extractor fails unless it selects exactly 64 vectors and three full sequences.
 
 The included fixtures cover:
 
@@ -47,8 +47,8 @@ pinned at HPKE working-group commit
 Tests additionally pin its Appendix C.8 export-only vector and Appendix D
 vectors for P-256 rejection sampling, empty inputs, embedded zero bytes, and
 empty `info`. Local malformed-input tests cover invalid encodings, off-curve
-points, invalid scalars, low-order X25519 values, tampering, and error
-normalization.
+points, invalid scalars, low-order X25519 and X448 values, private-key
+clamping, tampering, and error normalization.
 
 The P-384 / HKDF-SHA384 / AES-256-GCM fixture was generated independently by
 Go 1.26.5's standard-library `crypto/hpke` implementation. The small generator

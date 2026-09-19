@@ -41,19 +41,21 @@ module Error = struct
 end
 
 module Kem = struct
-  type id = P256 | P384 | P521 | X25519
+  type id = P256 | P384 | P521 | X25519 | X448
 
   let to_int = function
     | P256 -> 0x0010
     | P384 -> 0x0011
     | P521 -> 0x0012
     | X25519 -> 0x0020
+    | X448 -> 0x0021
 
   let of_int = function
     | 0x0010 -> Ok P256
     | 0x0011 -> Ok P384
     | 0x0012 -> Ok P521
     | 0x0020 -> Ok X25519
+    | 0x0021 -> Ok X448
     | id -> Error (Error.Unsupported_algorithm id)
 
   let pp ppf = function
@@ -61,18 +63,21 @@ module Kem = struct
     | P384 -> Format.pp_print_string ppf "DHKEM(P-384, HKDF-SHA384)"
     | P521 -> Format.pp_print_string ppf "DHKEM(P-521, HKDF-SHA512)"
     | X25519 -> Format.pp_print_string ppf "DHKEM(X25519, HKDF-SHA256)"
+    | X448 -> Format.pp_print_string ppf "DHKEM(X448, HKDF-SHA512)"
 
   let public_key_size = function
     | P256 -> 65
     | P384 -> 97
     | P521 -> 133
     | X25519 -> 32
+    | X448 -> 56
 
   let private_key_size = function
     | P256 -> 32
     | P384 -> 48
     | P521 -> 66
     | X25519 -> 32
+    | X448 -> 56
 
   let encapsulated_key_size = public_key_size
 
@@ -81,6 +86,7 @@ module Kem = struct
     | P384 -> 48
     | P521 -> 64
     | X25519 -> 32
+    | X448 -> 64
 end
 
 module Kdf = struct
@@ -277,6 +283,12 @@ module Util = struct
     Bytes.set_uint8 bytes 31 (Bytes.get_uint8 bytes 31 land 127 lor 64);
     Bytes.unsafe_to_string bytes
 
+  let normalize_x448 bytes =
+    let bytes = Bytes.of_string bytes in
+    Bytes.set_uint8 bytes 0 (Bytes.get_uint8 bytes 0 land 252);
+    Bytes.set_uint8 bytes 55 (Bytes.get_uint8 bytes 55 lor 128);
+    Bytes.unsafe_to_string bytes
+
   let ec_error error = Format.asprintf "%a" Mirage_crypto_ec.pp_error error
 end
 
@@ -293,6 +305,7 @@ let curve_order = function
       Util.of_hex_exn
         "01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409"
   | Kem.X25519 -> invalid_arg "X25519 has no rejection-sampling order"
+  | Kem.X448 -> invalid_arg "X448 has no rejection-sampling order"
 
 let valid_nist_scalar kem bytes =
   String.length bytes = Kem.private_key_size kem
@@ -304,7 +317,7 @@ let validate_public_bytes kem bytes =
     Error (Error.Invalid_public_key "wrong encoded length")
   else
     match kem with
-    | Kem.X25519 -> Ok ()
+    | Kem.X25519 | Kem.X448 -> Ok ()
     | Kem.P256 ->
         if bytes.[0] <> '\004' then
           Error
@@ -364,6 +377,7 @@ let dh_secret_and_public kem bytes =
           (Mirage_crypto_ec.P521.Dh.secret_of_octets ~compress:false bytes)
     | Kem.X25519 ->
         Result.map snd (Mirage_crypto_ec.X25519.secret_of_octets bytes)
+    | Kem.X448 -> Result.map snd (Curve448.X448.secret_of_octets bytes)
   in
   Result.map_error
     (fun error -> Error.Invalid_private_key (Util.ec_error error))
@@ -379,6 +393,7 @@ module Private_key = struct
       let* bytes =
         match kem with
         | Kem.X25519 -> Ok (Util.normalize_x25519 bytes)
+        | Kem.X448 -> Ok (Util.normalize_x448 bytes)
         | Kem.P256 | Kem.P384 | Kem.P521 ->
             if valid_nist_scalar kem bytes then Ok bytes
             else
@@ -460,7 +475,7 @@ module Labeled_kdf = struct
   let kem_kdf = function
     | Kem.P256 | Kem.X25519 -> Kdf.Hkdf_sha256
     | Kem.P384 -> Kdf.Hkdf_sha384
-    | Kem.P521 -> Kdf.Hkdf_sha512
+    | Kem.P521 | Kem.X448 -> Kdf.Hkdf_sha512
 
   let kem_extract kem ~salt ~label ikm =
     extract ~kdf:(kem_kdf kem) ~suite_id:(kem_suite_id kem) ~salt ~label ikm
@@ -476,13 +491,14 @@ let derive_key_pair_inner kem ~ikm =
     Labeled_kdf.kem_expand kem ~prk:dkp_prk ~label:"candidate"
       ~info:(Util.byte counter) (Kem.private_key_size kem)
   in
+  let secret () =
+    Labeled_kdf.kem_expand kem ~prk:dkp_prk ~label:"sk" ~info:""
+      (Kem.private_key_size kem)
+  in
   let secret_result =
     match kem with
-    | Kem.X25519 ->
-        Ok
-          (Util.normalize_x25519
-             (Labeled_kdf.kem_expand kem ~prk:dkp_prk ~label:"sk" ~info:""
-                (Kem.private_key_size kem)))
+    | Kem.X25519 -> Ok (Util.normalize_x25519 (secret ()))
+    | Kem.X448 -> Ok (Util.normalize_x448 (secret ()))
     | Kem.P256 | Kem.P384 | Kem.P521 ->
         let rec sample counter =
           if counter > 255 then Error Error.Derive_key_pair_failure
@@ -560,6 +576,15 @@ let dh private_key public_key =
           Result.map_error
             (fun error -> Error.Invalid_public_key (Util.ec_error error))
             (Mirage_crypto_ec.X25519.key_exchange secret public)
+      | Kem.X448 ->
+          let* secret, _ =
+            Result.map_error
+              (fun error -> Error.Internal_error (Util.ec_error error))
+              (Curve448.X448.secret_of_octets secret)
+          in
+          Result.map_error
+            (fun error -> Error.Invalid_public_key (Util.ec_error error))
+            (Curve448.X448.key_exchange secret public)
     in
     result
 

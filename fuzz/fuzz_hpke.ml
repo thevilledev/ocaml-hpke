@@ -9,19 +9,20 @@ let rng () =
   Mirage_crypto_rng.create ~seed:(String.make 64 '\x71')
     (module Mirage_crypto_rng.Fortuna)
 
-let all_kems = [ Kem.P256; Kem.P384; Kem.P521; Kem.X25519 ]
+let all_kems = [ Kem.P256; Kem.P384; Kem.P521; Kem.X25519; Kem.X448 ]
 let all_aeads = [ Aead.Aes_128_gcm; Aead.Aes_256_gcm; Aead.Chacha20_poly1305 ]
 
 let kdf_for_kem = function
   | Kem.P256 | Kem.X25519 -> Kdf.Hkdf_sha256
   | Kem.P384 -> Kdf.Hkdf_sha384
-  | Kem.P521 -> Kdf.Hkdf_sha512
+  | Kem.P521 | Kem.X448 -> Kdf.Hkdf_sha512
 
 let kem_name = function
   | Kem.P256 -> "P-256"
   | Kem.P384 -> "P-384"
   | Kem.P521 -> "P-521"
   | Kem.X25519 -> "X25519"
+  | Kem.X448 -> "X448"
 
 let aead_name = function
   | Aead.Aes_128_gcm -> "AES-128-GCM"

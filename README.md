@@ -3,8 +3,8 @@
 `hpke` is an idiomatic OCaml implementation of Hybrid Public Key Encryption
 ([RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html)). It exposes Base and
 PSK modes under the explicitly versioned `Hpke.Rfc9180` module and delegates
-elliptic-curve, hash, and AEAD primitives to Mirage Crypto, Digestif, and
-`kdf`.
+elliptic-curve, hash, and AEAD primitives to Mirage Crypto, `curve448`,
+Digestif, and `kdf`.
 
 The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
@@ -26,7 +26,7 @@ Usage, ciphersuites, the security model, and development notes:
 
 | Component | Algorithms |
 | --- | --- |
-| KEM | P-256, P-384, P-521, X25519 DHKEM |
+| KEM | P-256, P-384, P-521, X25519, X448 DHKEM |
 | KDF | HKDF-SHA-256, HKDF-SHA-384, HKDF-SHA-512 |
 | AEAD | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, export-only |
 | Modes | RFC 9180 Base and PSK |
@@ -35,13 +35,31 @@ Usage, ciphersuites, the security model, and development notes:
 | --- | --- |
 | RFC 9180 Base, PSK, export-only, and the algorithms above | Implemented |
 | Auth and AuthPSK modes | Deferred |
-| X448 | Deferred pending a suitable maintained OCaml primitive |
 | Post-quantum and hybrid KEMs | Deferred |
 | HPKE-bis or another successor standard | Deferred to a new versioned module |
 | Application wire framing | Deferred to applications |
 
 The deferred features are intentionally outside the first OPAM release. They
 do not change the wire behavior of `Hpke.Rfc9180`.
+
+## X448 backends
+
+X448 is provided by [`curve448`](https://github.com/thevilledev/ocaml-curve448),
+which implements its arithmetic twice and lets the final executable choose.
+`hpke` depends on the plain `curve448` library, so an application that says
+nothing gets the pure OCaml implementation. To use the C implementation, which
+is two to three times faster, name it next to `hpke`:
+
+```dune
+(executable
+ (name server)
+ (libraries hpke curve448.c))
+```
+
+Both behave identically. With ocamlfind instead of dune, the `curve448`
+package holds only the interface, so link `curve448.ocaml` or `curve448.c`
+explicitly. `curve448` needs a 64-bit OCaml, so `hpke` is no longer
+installable on 32-bit architectures.
 
 ## Example
 
