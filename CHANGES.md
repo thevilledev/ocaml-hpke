@@ -13,8 +13,20 @@
   one by adding `curve448.c` to its own libraries. `curve448` needs a 64-bit
   OCaml, so `hpke` is no longer installable on 32-bit architectures, whichever
   KEM an application uses.
-- Grow the pinned RFC 9180 corpus from 48 to 64 cases with the 16 X448 Base
-  and PSK vectors of the same CFRG commit. The 48 existing cases are unchanged.
+- Add the RFC 9180 Auth and AuthPSK modes, which also authenticate the sender
+  with a static KEM key pair: `Rfc9180.setup_auth_sender`,
+  `setup_auth_receiver`, `setup_auth_psk_sender`, and
+  `setup_auth_psk_receiver`, and the single-shot `seal_auth`, `open_auth`,
+  `seal_auth_psk`, and `open_auth_psk`. The sender passes its `Private_key.t`
+  and the recipient the sender's `Public_key.t`, both as `~sender`; a key of
+  another KEM is a `Key_mismatch`. Sender authentication is not a signature:
+  whoever holds the recipient's private key can seal as any sender. The
+  additions are new functions only, so existing callers are unaffected.
+- Add `setup_auth_sender` and `setup_auth_psk_sender` to `hpke.for_testing`.
+- Grow the pinned RFC 9180 corpus from 48 to 128 cases, every vector of the
+  same CFRG commit: the 16 X448 Base and PSK vectors, and the 64 Auth and
+  AuthPSK vectors over P-256, P-521, X25519, and X448. The 48 existing cases
+  are unchanged.
 - Parse private keys through one exhaustive match on the KEM. The previous
   wildcard would have let a new KEM skip clamping without a compiler warning.
 - Check X25519 and X448 private-key clamping against literal bytes. The vector
@@ -27,7 +39,8 @@
   receiver is up to twice as fast and setting up a sender up to half again as
   fast. The NIST curves multiply the base point from a table and gain a little
   over a tenth.
-- Keep the RFC 9180 wire behavior of the existing KEMs unchanged from 0.2.0.
+- Keep the RFC 9180 wire behavior of the existing KEMs and modes unchanged
+  from 0.2.0.
 
 ## 0.2.0 — 2026-09-18
 

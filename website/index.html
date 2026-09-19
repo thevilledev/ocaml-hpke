@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       name="description"
-      content="hpke is an idiomatic OCaml implementation of RFC 9180 Hybrid Public Key Encryption, offering Base and PSK modes on Mirage Crypto primitives."
+      content="hpke is an idiomatic OCaml implementation of RFC 9180 Hybrid Public Key Encryption, offering the Base, PSK, Auth, and AuthPSK modes on Mirage Crypto primitives."
     >
     <meta name="theme-color" content="#ffffff">
     <meta property="og:type" content="website">
     <meta property="og:title" content="hpke">
     <meta
       property="og:description"
-      content="RFC 9180 Hybrid Public Key Encryption for OCaml. Base and PSK modes, abstract keys, explicit randomness."
+      content="RFC 9180 Hybrid Public Key Encryption for OCaml. All four modes, abstract keys, explicit randomness."
     >
     <meta property="og:url" content="https://ville.dev/ocaml-hpke/">
     <meta property="og:image" content="https://ville.dev/ocaml-hpke/og.png">
@@ -21,7 +21,7 @@
     <meta property="og:image:alt" content="hpke — RFC 9180 Hybrid Public Key Encryption for OCaml">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="hpke">
-    <meta name="twitter:description" content="RFC 9180 Hybrid Public Key Encryption for OCaml. Base and PSK modes, abstract keys, explicit randomness.">
+    <meta name="twitter:description" content="RFC 9180 Hybrid Public Key Encryption for OCaml. All four modes, abstract keys, explicit randomness.">
     <meta name="twitter:image" content="https://ville.dev/ocaml-hpke/og.png">
     <meta name="twitter:image:alt" content="hpke — RFC 9180 Hybrid Public Key Encryption for OCaml">
     <link rel="canonical" href="https://ville.dev/ocaml-hpke/">
@@ -129,8 +129,8 @@
 
       <p>
         An idiomatic OCaml implementation of Hybrid Public Key Encryption,
-        <a href="https://www.rfc-editor.org/rfc/rfc9180.html">RFC 9180</a>. Base
-        and PSK modes live under the explicitly versioned
+        <a href="https://www.rfc-editor.org/rfc/rfc9180.html">RFC 9180</a>. The
+        Base, PSK, Auth, and AuthPSK modes live under the explicitly versioned
         <code>Hpke.Rfc9180</code> module; elliptic-curve, hash, and AEAD
         primitives are delegated to
         <a href="https://github.com/mirage/mirage-crypto">Mirage Crypto</a>,
@@ -160,7 +160,7 @@
             <tr><td>KEM</td><td>DHKEM over P-256, P-384, P-521, X25519, X448</td><td class="n">5</td></tr>
             <tr><td>KDF</td><td>HKDF-SHA256, HKDF-SHA384, HKDF-SHA512</td><td class="n">3</td></tr>
             <tr><td>AEAD</td><td>AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305</td><td class="n">3</td></tr>
-            <tr><td>Modes</td><td>Base, PSK</td><td class="n">2</td></tr>
+            <tr><td>Modes</td><td>Base, PSK, Auth, AuthPSK</td><td class="n">4</td></tr>
           </tbody>
         </table>
       </div>
@@ -187,7 +187,7 @@
           <tr><th scope="row">Release</th><td>0.2.0</td></tr>
           <tr><th scope="row">OCaml</th><td>4.14 or newer</td></tr>
           <tr><th scope="row">Dune</th><td>3.12 or newer</td></tr>
-          <tr><th scope="row">Modes</th><td>Base and PSK</td></tr>
+          <tr><th scope="row">Modes</th><td>Base, PSK, Auth, and AuthPSK</td></tr>
           <tr><th scope="row">Ciphersuites</th><td>45, plus 15 export-only</td></tr>
           <tr><th scope="row">License</th><td>ISC</td></tr>
         </tbody>

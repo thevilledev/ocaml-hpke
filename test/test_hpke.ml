@@ -174,6 +174,104 @@ let rfc9180_chacha_vector () =
             (hex
                "1c5250d8034ec2b784ba2cfd69dbdb8af406cfe3ff938e131f0def8c8b60b4db21993c62ce81883d2dd1b51a28")))
 
+let rfc9180_auth_vector () =
+  (* RFC 9180, Appendix A.1.3. *)
+  let recipient =
+    ok
+      (Private_key.of_bytes ~kem:Kem.X25519
+         (hex "fdea67cf831f1ca98d8e27b1f6abeb5b7745e9d35348b80fa407ff6958f9137e"))
+  in
+  let sender =
+    ok
+      (Public_key.of_bytes ~kem:Kem.X25519
+         (hex "8b0c70873dc5aecb7f9ee4e62406a397b350e57012be45cf53b7105ae731790b"))
+  in
+  let context =
+    ok
+      (Rfc9180.setup_auth_receiver x25519_aes_suite ~recipient ~sender
+         ~encapsulated_key:
+           (hex
+              "23fb952571a14a25e3d678140cd0e5eb47a0961bb18afcf85896e5453c312e76")
+         ~info)
+  in
+  check_hex "auth export"
+    "28c70088017d70c896a8420f04702c5a321d9cbf0279fba899b59e51bac72c85"
+    (ok (Rfc9180.Receiver.export context ~context:"" ~length:32));
+  let ciphertexts =
+    [
+      ( "436f756e742d30",
+        "5fd92cc9d46dbf8943e72a07e42f363ed5f721212cd90bcfd072bfd9f44e06b80fd17824947496e21b680c141b"
+      );
+      ( "436f756e742d31",
+        "d3736bb256c19bfa93d79e8f80b7971262cb7c887e35c26370cfed62254369a1b52e3d505b79dd699f002bc8ed"
+      );
+      ( "436f756e742d32",
+        "122175cfd5678e04894e4ff8789e85dd381df48dcaf970d52057df2c9acc3b121313a2bfeaa986050f82d93645"
+      );
+    ]
+  in
+  List.iter
+    (fun (aad, ciphertext) ->
+      Alcotest.(check string)
+        "auth plaintext" plaintext
+        (ok
+           (Rfc9180.Receiver.open_ context ~aad:(hex aad)
+              ~ciphertext:(hex ciphertext))))
+    ciphertexts
+
+let rfc9180_auth_psk_vector () =
+  (* RFC 9180, Appendix A.1.4. The PSK is the one of Appendix A.1.2. *)
+  let recipient =
+    ok
+      (Private_key.of_bytes ~kem:Kem.X25519
+         (hex "cb29a95649dc5656c2d054c1aa0d3df0493155e9d5da6d7e344ed8b6a64a9423"))
+  in
+  let sender =
+    ok
+      (Public_key.of_bytes ~kem:Kem.X25519
+         (hex "2bfb2eb18fcad1af0e4f99142a1c474ae74e21b9425fc5c589382c69b50cc57e"))
+  in
+  let psk =
+    ok
+      (Psk.create
+         ~secret:
+           (hex
+              "0247fd33b913760fa1fa51e1892d9f307fbe65eb171e8132c2af18555a738b82")
+         ~id:(hex "456e6e796e20447572696e206172616e204d6f726961"))
+  in
+  let context =
+    ok
+      (Rfc9180.setup_auth_psk_receiver x25519_aes_suite ~recipient ~sender ~psk
+         ~encapsulated_key:
+           (hex
+              "820818d3c23993492cc5623ab437a48a0a7ca3e9639c140fe1e33811eb844b7c")
+         ~info)
+  in
+  check_hex "auth-psk export"
+    "08f7e20644bb9b8af54ad66d2067457c5f9fcb2a23d9f6cb4445c0797b330067"
+    (ok (Rfc9180.Receiver.export context ~context:"" ~length:32));
+  let ciphertexts =
+    [
+      ( "436f756e742d30",
+        "a84c64df1e11d8fd11450039d4fe64ff0c8a99fca0bd72c2d4c3e0400bc14a40f27e45e141a24001697737533e"
+      );
+      ( "436f756e742d31",
+        "4d19303b848f424fc3c3beca249b2c6de0a34083b8e909b6aa4c3688505c05ffe0c8f57a0a4c5ab9da127435d9"
+      );
+      ( "436f756e742d32",
+        "0c085a365fbfa63409943b00a3127abce6e45991bc653f182a80120868fc507e9e4d5e37bcc384fc8f14153b24"
+      );
+    ]
+  in
+  List.iter
+    (fun (aad, ciphertext) ->
+      Alcotest.(check string)
+        "auth-psk plaintext" plaintext
+        (ok
+           (Rfc9180.Receiver.open_ context ~aad:(hex aad)
+              ~ciphertext:(hex ciphertext))))
+    ciphertexts
+
 let successor_rejection_sampling_vector () =
   (* draft-ietf-hpke-hpke-04, Appendix D.1. The counter=0 candidate is
      deliberately above the P-256 group order. *)
@@ -410,6 +508,53 @@ let psk_round_trips () =
            (Rfc9180.open_psk suite ~recipient ~psk ~info:"" ~aad:"" ~ciphertext)))
     all_kems
 
+let authenticated_round_trips () =
+  let generator = rng () in
+  let psk = ok (Psk.create ~secret:(String.make 32 '\x5a') ~id:"test-psk") in
+  List.iter
+    (fun kem ->
+      let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+      let sender, sender_public = ok (generate_key_pair ~rng:generator kem) in
+      let suite =
+        Suite.create ~kem ~kdf:Kdf.Hkdf_sha384 ~aead:Aead.Aes_256_gcm
+      in
+      let sealed =
+        ok
+          (Rfc9180.seal_auth ~rng:generator suite ~recipient:public ~sender
+             ~info:"auth-info" ~aad:"auth-aad" ~plaintext:"auth-message")
+      in
+      Alcotest.(check string)
+        "Auth round trip" "auth-message"
+        (ok
+           (Rfc9180.open_auth suite ~recipient ~sender:sender_public
+              ~info:"auth-info" ~aad:"auth-aad" ~ciphertext:sealed));
+      let sealed =
+        ok
+          (Rfc9180.seal_auth_psk ~rng:generator suite ~recipient:public ~sender
+             ~psk ~info:"" ~aad:"" ~plaintext:"")
+      in
+      Alcotest.(check string)
+        "AuthPSK empty-message round trip" ""
+        (ok
+           (Rfc9180.open_auth_psk suite ~recipient ~sender:sender_public ~psk
+              ~info:"" ~aad:"" ~ciphertext:sealed));
+      let exporter = Suite.export_only ~kem ~kdf:Kdf.Hkdf_sha256 in
+      let setup =
+        ok
+          (Rfc9180.setup_auth_sender ~rng:generator exporter ~recipient:public
+             ~sender ~info:"auth-export")
+      in
+      let receiver =
+        ok
+          (Rfc9180.setup_auth_receiver exporter ~recipient ~sender:sender_public
+             ~encapsulated_key:setup.encapsulated_key ~info:"auth-export")
+      in
+      Alcotest.(check string)
+        "Auth export-only agreement"
+        (ok (Rfc9180.Sender.export setup.context ~context:"ctx" ~length:32))
+        (ok (Rfc9180.Receiver.export receiver ~context:"ctx" ~length:32)))
+    all_kems
+
 let failed_open_does_not_advance () =
   let recipient =
     ok
@@ -485,7 +630,15 @@ let malformed_inputs () =
         ("long " ^ name ^ " private key")
         (Private_key.of_bytes ~kem
            (String.make (Kem.private_key_size kem + 1) '\001'));
-      let recipient, _ = ok (generate_key_pair ~rng:generator kem) in
+      let recipient, recipient_public =
+        ok (generate_key_pair ~rng:generator kem)
+      in
+      let sender, _ = ok (generate_key_pair ~rng:generator kem) in
+      let valid =
+        ok
+          (Rfc9180.setup_base_sender ~rng:generator suite
+             ~recipient:recipient_public ~info:"")
+      in
       (* Every encoding of the right length parses; a low-order value is only
          recognized by the all-zero Diffie-Hellman output it produces. *)
       List.iteri
@@ -497,12 +650,36 @@ let malformed_inputs () =
            with
           | Error (Error.Invalid_public_key _) -> ()
           | _ -> Alcotest.failf "low-order %s public key %d" name index);
-          match
-            Rfc9180.setup_base_receiver suite ~recipient
-              ~encapsulated_key:encoding ~info:""
-          with
+          (match
+             Rfc9180.setup_auth_sender ~rng:generator suite ~recipient:public
+               ~sender ~info:""
+           with
+          | Error (Error.Invalid_public_key _) -> ()
+          | _ -> Alcotest.failf "low-order %s Auth recipient %d" name index);
+          (match
+             Rfc9180.setup_base_receiver suite ~recipient
+               ~encapsulated_key:encoding ~info:""
+           with
           | Error (Error.Invalid_encapsulation _) -> ()
-          | _ -> Alcotest.failf "low-order %s encapsulation %d" name index)
+          | _ -> Alcotest.failf "low-order %s encapsulation %d" name index);
+          (* A sender key comes from the caller, not from the peer's
+             encapsulation, so it is reported as an invalid public key. *)
+          (match
+             Rfc9180.setup_auth_receiver suite ~recipient ~sender:public
+               ~encapsulated_key:valid.encapsulated_key ~info:""
+           with
+          | Error (Error.Invalid_public_key _) -> ()
+          | _ -> Alcotest.failf "low-order %s sender key %d" name index);
+          match
+            Rfc9180.open_auth suite ~recipient ~sender:public ~info:"" ~aad:""
+              ~ciphertext:
+                {
+                  Rfc9180.encapsulated_key = valid.encapsulated_key;
+                  ciphertext = "";
+                }
+          with
+          | Error Error.Open_error -> ()
+          | _ -> Alcotest.failf "low-order %s sender key %d at open" name index)
         low_order_encodings;
       expect_error
         ("short " ^ name ^ " encapsulation")
@@ -582,15 +759,18 @@ let normalized_single_shot_error () =
       Alcotest.failf "error was not normalized: %s" (error_to_string error)
   | Ok _ -> Alcotest.fail "wrong info opened"
 
+let expect_open_error label result =
+  match result with
+  | Error Error.Open_error -> ()
+  | Error error -> Alcotest.failf "%s returned %s" label (error_to_string error)
+  | Ok _ -> Alcotest.failf "%s unexpectedly opened" label
+
+let expect_key_mismatch label = function
+  | Error Error.Key_mismatch -> ()
+  | _ -> Alcotest.failf "%s was not reported as a key mismatch" label
+
 let adversarial_mismatches () =
   let generator = rng () in
-  let expect_open_error label result =
-    match result with
-    | Error Error.Open_error -> ()
-    | Error error ->
-        Alcotest.failf "%s returned %s" label (error_to_string error)
-    | Ok _ -> Alcotest.failf "%s unexpectedly opened" label
-  in
   let cases =
     [
       ( "P-256/AES-128",
@@ -695,6 +875,108 @@ let adversarial_mismatches () =
   with
   | Error (Error.Invalid_encapsulation _) -> ()
   | _ -> Alcotest.fail "invalid encapsulation was not structured"
+
+(* A message opens only in the mode it was sealed in, and in an authenticated
+   mode only as coming from its sender. *)
+let authenticated_mismatches () =
+  let generator = rng () in
+  let psk = ok (Psk.create ~secret:(String.make 32 '\x11') ~id:"psk") in
+  let other_psk =
+    ok (Psk.create ~secret:(String.make 32 '\x12') ~id:"other-psk")
+  in
+  let info = "auth-info" and aad = "auth-aad" in
+  List.iter
+    (fun kem ->
+      let name = Format.asprintf "%a" Kem.pp kem in
+      let suite =
+        Suite.create ~kem ~kdf:Kdf.Hkdf_sha256 ~aead:Aead.Chacha20_poly1305
+      in
+      let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+      let sender, sender_public = ok (generate_key_pair ~rng:generator kem) in
+      let _, other_sender = ok (generate_key_pair ~rng:generator kem) in
+      let expect label = expect_open_error (name ^ " " ^ label) in
+      let sealed =
+        ok
+          (Rfc9180.seal_auth ~rng:generator suite ~recipient:public ~sender
+             ~info ~aad ~plaintext:"auth-message")
+      in
+      expect "Auth from another sender"
+        (Rfc9180.open_auth suite ~recipient ~sender:other_sender ~info ~aad
+           ~ciphertext:sealed);
+      expect "Auth opened as Base"
+        (Rfc9180.open_base suite ~recipient ~info ~aad ~ciphertext:sealed);
+      expect "Auth opened as AuthPSK"
+        (Rfc9180.open_auth_psk suite ~recipient ~sender:sender_public ~psk ~info
+           ~aad ~ciphertext:sealed);
+      let sealed =
+        ok
+          (Rfc9180.seal_auth_psk ~rng:generator suite ~recipient:public ~sender
+             ~psk ~info ~aad ~plaintext:"auth-psk-message")
+      in
+      expect "AuthPSK from another sender"
+        (Rfc9180.open_auth_psk suite ~recipient ~sender:other_sender ~psk ~info
+           ~aad ~ciphertext:sealed);
+      expect "AuthPSK with another PSK"
+        (Rfc9180.open_auth_psk suite ~recipient ~sender:sender_public
+           ~psk:other_psk ~info ~aad ~ciphertext:sealed);
+      expect "AuthPSK opened as PSK"
+        (Rfc9180.open_psk suite ~recipient ~psk ~info ~aad ~ciphertext:sealed);
+      expect "AuthPSK opened as Auth"
+        (Rfc9180.open_auth suite ~recipient ~sender:sender_public ~info ~aad
+           ~ciphertext:sealed);
+      let sealed =
+        ok
+          (Rfc9180.seal_base ~rng:generator suite ~recipient:public ~info ~aad
+             ~plaintext:"base-message")
+      in
+      expect "Base opened as Auth"
+        (Rfc9180.open_auth suite ~recipient ~sender:sender_public ~info ~aad
+           ~ciphertext:sealed);
+      let sealed =
+        ok
+          (Rfc9180.seal_psk ~rng:generator suite ~recipient:public ~psk ~info
+             ~aad ~plaintext:"psk-message")
+      in
+      expect "PSK opened as AuthPSK"
+        (Rfc9180.open_auth_psk suite ~recipient ~sender:sender_public ~psk ~info
+           ~aad ~ciphertext:sealed))
+    all_kems;
+  (* A sender key of another KEM is the caller's mistake, so it stays
+     distinguishable, single-shot opens included. *)
+  let recipient, public = ok (generate_key_pair ~rng:generator Kem.X25519) in
+  let p256_sender, p256_sender_public =
+    ok (generate_key_pair ~rng:generator Kem.P256)
+  in
+  let valid =
+    ok
+      (Rfc9180.setup_base_sender ~rng:generator x25519_aes_suite
+         ~recipient:public ~info)
+  in
+  let ciphertext =
+    { Rfc9180.encapsulated_key = valid.encapsulated_key; ciphertext = "" }
+  in
+  expect_key_mismatch "Auth sender private key"
+    (Rfc9180.setup_auth_sender ~rng:generator x25519_aes_suite ~recipient:public
+       ~sender:p256_sender ~info);
+  expect_key_mismatch "AuthPSK sender private key"
+    (Rfc9180.setup_auth_psk_sender ~rng:generator x25519_aes_suite
+       ~recipient:public ~sender:p256_sender ~psk ~info);
+  expect_key_mismatch "single-shot Auth sender private key"
+    (Rfc9180.seal_auth ~rng:generator x25519_aes_suite ~recipient:public
+       ~sender:p256_sender ~info ~aad ~plaintext);
+  expect_key_mismatch "Auth sender public key"
+    (Rfc9180.setup_auth_receiver x25519_aes_suite ~recipient
+       ~sender:p256_sender_public ~encapsulated_key:valid.encapsulated_key ~info);
+  expect_key_mismatch "AuthPSK sender public key"
+    (Rfc9180.setup_auth_psk_receiver x25519_aes_suite ~recipient
+       ~sender:p256_sender_public ~psk ~encapsulated_key:valid.encapsulated_key
+       ~info);
+  expect_key_mismatch "single-shot Auth sender public key"
+    (Rfc9180.open_auth x25519_aes_suite ~recipient ~sender:p256_sender_public
+       ~info ~aad ~ciphertext);
+  expect_key_mismatch "single-shot AuthPSK sender public key"
+    (Rfc9180.open_auth_psk x25519_aes_suite ~recipient
+       ~sender:p256_sender_public ~psk ~info ~aad ~ciphertext)
 
 let export_only () =
   let generator = rng () in
@@ -887,10 +1169,6 @@ let deterministic_sender () =
   let p256_ephemeral, p256_public =
     ok (derive_key_pair Kem.P256 ~ikm:(String.make 32 '\x46'))
   in
-  let expect_key_mismatch label = function
-    | Error Error.Key_mismatch -> ()
-    | _ -> Alcotest.failf "%s was not reported as a key mismatch" label
-  in
   expect_key_mismatch "ephemeral key of another KEM"
     (Hpke_for_testing.setup_base_sender x25519_aes_suite
        ~ephemeral:p256_ephemeral ~recipient:public ~info);
@@ -917,6 +1195,76 @@ let deterministic_sender () =
   Alcotest.(check string)
     "PSK round trip" plaintext
     (ok (Rfc9180.Receiver.open_ psk_receiver ~aad:"" ~ciphertext:psk_sealed))
+
+let deterministic_authenticated_sender () =
+  let generator = rng () in
+  let recipient, public = ok (generate_key_pair ~rng:generator Kem.X25519) in
+  let sender, sender_public =
+    ok (generate_key_pair ~rng:generator Kem.X25519)
+  in
+  let other_sender, _ = ok (generate_key_pair ~rng:generator Kem.X25519) in
+  let ephemeral, ephemeral_public =
+    ok (derive_key_pair Kem.X25519 ~ikm:(String.make 32 '\x45'))
+  in
+  let seal_first setup =
+    ok (Rfc9180.Sender.seal (ok setup).Rfc9180.context ~aad:"aad" ~plaintext)
+  in
+  let setup ~sender =
+    Hpke_for_testing.setup_auth_sender x25519_aes_suite ~ephemeral
+      ~recipient:public ~sender ~info
+  in
+  let first = ok (setup ~sender) in
+  Alcotest.(check string)
+    "encapsulated key is the ephemeral public key"
+    (Public_key.to_bytes ephemeral_public)
+    first.encapsulated_key;
+  let sealed = ok (Rfc9180.Sender.seal first.context ~aad:"aad" ~plaintext) in
+  Alcotest.(check string)
+    "same keys, same ciphertext" sealed
+    (seal_first (setup ~sender));
+  Alcotest.(check bool)
+    "the sender key enters the key schedule" false
+    (String.equal sealed (seal_first (setup ~sender:other_sender)));
+  Alcotest.(check bool)
+    "Auth and Base modes differ" false
+    (String.equal sealed
+       (seal_first
+          (Hpke_for_testing.setup_base_sender x25519_aes_suite ~ephemeral
+             ~recipient:public ~info)));
+  let receiver =
+    ok
+      (Rfc9180.setup_auth_receiver x25519_aes_suite ~recipient
+         ~sender:sender_public ~encapsulated_key:first.encapsulated_key ~info)
+  in
+  Alcotest.(check string)
+    "an ordinary receiver opens it" plaintext
+    (ok (Rfc9180.Receiver.open_ receiver ~aad:"aad" ~ciphertext:sealed));
+  let psk = ok (Psk.create ~secret:(String.make 32 '\x11') ~id:"psk") in
+  let psk_setup =
+    Hpke_for_testing.setup_auth_psk_sender x25519_aes_suite ~ephemeral
+      ~recipient:public ~sender ~psk ~info
+  in
+  let psk_sealed = seal_first psk_setup in
+  Alcotest.(check bool)
+    "AuthPSK and Auth modes differ" false
+    (String.equal sealed psk_sealed);
+  let psk_receiver =
+    ok
+      (Rfc9180.setup_auth_psk_receiver x25519_aes_suite ~recipient
+         ~sender:sender_public ~psk
+         ~encapsulated_key:(ok psk_setup).encapsulated_key ~info)
+  in
+  Alcotest.(check string)
+    "AuthPSK round trip" plaintext
+    (ok (Rfc9180.Receiver.open_ psk_receiver ~aad:"aad" ~ciphertext:psk_sealed));
+  let p256_sender, _ =
+    ok (derive_key_pair Kem.P256 ~ikm:(String.make 32 '\x46'))
+  in
+  expect_key_mismatch "Auth sender key of another KEM"
+    (setup ~sender:p256_sender);
+  expect_key_mismatch "AuthPSK sender key of another KEM"
+    (Hpke_for_testing.setup_auth_psk_sender x25519_aes_suite ~ephemeral
+       ~recipient:public ~sender:p256_sender ~psk ~info)
 
 let qcheck_round_trip =
   let generator = QCheck2.Gen.string_size (QCheck2.Gen.int_bound 1024) in
@@ -945,9 +1293,15 @@ let qcheck_peer_input_total =
       let recipient, _ =
         ok (derive_key_pair Kem.X25519 ~ikm:(String.make 32 '\x42'))
       in
+      let _, sender =
+        ok (derive_key_pair Kem.X25519 ~ikm:(String.make 32 '\x43'))
+      in
       ignore (Public_key.of_bytes ~kem:Kem.X25519 input);
       ignore
         (Rfc9180.setup_base_receiver x25519_aes_suite ~recipient
+           ~encapsulated_key:input ~info:"fuzz");
+      ignore
+        (Rfc9180.setup_auth_receiver x25519_aes_suite ~recipient ~sender
            ~encapsulated_key:input ~info:"fuzz");
       true)
 
@@ -959,6 +1313,8 @@ let () =
           Alcotest.test_case "X25519 AES Base" `Quick rfc9180_base_vector;
           Alcotest.test_case "X25519 AES PSK" `Quick rfc9180_psk_vector;
           Alcotest.test_case "X25519 ChaCha Base" `Quick rfc9180_chacha_vector;
+          Alcotest.test_case "X25519 AES Auth" `Quick rfc9180_auth_vector;
+          Alcotest.test_case "X25519 AES AuthPSK" `Quick rfc9180_auth_psk_vector;
         ] );
       ( "successor draft vectors",
         [
@@ -982,6 +1338,8 @@ let () =
           Alcotest.test_case "all 45 Base combinations" `Quick
             all_suite_round_trips;
           Alcotest.test_case "PSK all KEMs" `Quick psk_round_trips;
+          Alcotest.test_case "Auth and AuthPSK all KEMs" `Quick
+            authenticated_round_trips;
           Alcotest.test_case "export-only" `Quick export_only;
         ] );
       ( "invariants",
@@ -995,6 +1353,8 @@ let () =
             normalized_single_shot_error;
           Alcotest.test_case "adversarial mismatches" `Quick
             adversarial_mismatches;
+          Alcotest.test_case "authenticated-mode mismatches" `Quick
+            authenticated_mismatches;
         ] );
       ( "suite primitives",
         [
@@ -1005,6 +1365,8 @@ let () =
       ( "for testing",
         [
           Alcotest.test_case "deterministic sender" `Quick deterministic_sender;
+          Alcotest.test_case "deterministic Auth and AuthPSK senders" `Quick
+            deterministic_authenticated_sender;
         ] );
       ( "properties",
         [

@@ -16,7 +16,7 @@ SOURCE_URL = (
     "https://raw.githubusercontent.com/cfrg/draft-irtf-cfrg-hpke/"
     f"{SOURCE_COMMIT}/test-vectors.json"
 )
-SUPPORTED_MODES = {0, 1}
+SUPPORTED_MODES = {0, 1, 2, 3}
 SUPPORTED_KEMS = {0x0010, 0x0012, 0x0020, 0x0021}
 SUPPORTED_KDFS = {0x0001, 0x0003}
 SUPPORTED_AEADS = {0x0001, 0x0002, 0x0003, 0xFFFF}
@@ -37,6 +37,10 @@ COPIED_FIELDS = (
     "ikmR",
     "skRm",
     "pkRm",
+    # The sender's static key pair, present in the Auth and AuthPSK modes only.
+    "ikmS",
+    "skSm",
+    "pkSm",
     "enc",
     "psk",
     "psk_id",
@@ -85,8 +89,8 @@ def main() -> None:
         )
     source = json.loads(source_bytes)
     vectors = [reduce_vector(vector) for vector in source if selected(vector)]
-    if len(vectors) != 64:
-        raise SystemExit(f"expected 64 supported vectors, found {len(vectors)}")
+    if len(vectors) != 128:
+        raise SystemExit(f"expected 128 supported vectors, found {len(vectors)}")
 
     full_sequences = [
         vector for vector in vectors if len(vector["encryptions"]) == 257

@@ -23,6 +23,12 @@ disclosure after a fix is available.
 - Never link `hpke.for_testing` outside a test suite. It sets up a sender from
   a caller-chosen ephemeral private key; reusing or disclosing that key breaks
   the confidentiality of every message sealed under it.
+- The Auth and AuthPSK modes authenticate the sender to the recipient, but
+  not as a signature would. Whoever holds the recipient's private key, and in
+  AuthPSK mode the PSK too, can seal a message that opens as coming from any
+  sender (key-compromise impersonation, RFC 9180, Section 9.1.1). For the same
+  reason a recipient cannot prove to a third party who sent a message. Where
+  either matters, also sign the encapsulated key and ciphertext.
 - `Aead.seal` takes an explicit key and nonce and cannot prevent their reuse.
   Sealing twice under one `(key, nonce)` pair forfeits both confidentiality
   and authenticity. Prefer a context, which sequences nonces itself, and derive

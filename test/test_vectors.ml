@@ -62,8 +62,8 @@ let kdf vector = member_int "kdf_id" vector |> Kdf.of_int |> ok
 
 let psk vector =
   match member_int "mode" vector with
-  | 0 -> None
-  | 1 ->
+  | 0 | 2 -> None
+  | 1 | 3 ->
       Some
         (ok
            (Psk.create ~secret:(member_hex "psk" vector)
@@ -78,53 +78,77 @@ let serialized_private_key kem encoded =
       Private_key.of_bytes ~kem (hex encoded) |> ok |> Private_key.to_bytes
   | Kem.P256 | Kem.P384 | Kem.P521 -> hex encoded
 
+let derive_key_pair_of vector kem ~role ~ikm ~private_key ~public_key =
+  let derived_private, derived_public =
+    ok (derive_key_pair kem ~ikm:(member_hex ikm vector))
+  in
+  Alcotest.(check string)
+    (role ^ " private key")
+    (serialized_private_key kem (member_string private_key vector))
+    (Private_key.to_bytes derived_private);
+  check_hex (role ^ " public key")
+    (member_string public_key vector)
+    (Public_key.to_bytes derived_public);
+  (derived_private, derived_public)
+
+(* Returns the recipient's key pair, and the sender's static key pair in the
+   Auth and AuthPSK modes. *)
 let prepare_keys vector kem =
-  let recipient, recipient_public =
-    ok (derive_key_pair kem ~ikm:(member_hex "ikmR" vector))
+  let recipient =
+    derive_key_pair_of vector kem ~role:"recipient" ~ikm:"ikmR"
+      ~private_key:"skRm" ~public_key:"pkRm"
   in
-  Alcotest.(check string)
-    "recipient private key"
-    (serialized_private_key kem (member_string "skRm" vector))
-    (Private_key.to_bytes recipient);
-  check_hex "recipient public key"
-    (member_string "pkRm" vector)
-    (Public_key.to_bytes recipient_public);
-  let ephemeral, ephemeral_public =
-    ok (derive_key_pair kem ~ikm:(member_hex "ikmE" vector))
+  let _ephemeral =
+    derive_key_pair_of vector kem ~role:"ephemeral" ~ikm:"ikmE"
+      ~private_key:"skEm" ~public_key:"pkEm"
   in
-  Alcotest.(check string)
-    "ephemeral private key"
-    (serialized_private_key kem (member_string "skEm" vector))
-    (Private_key.to_bytes ephemeral);
-  check_hex "ephemeral public key"
-    (member_string "pkEm" vector)
-    (Public_key.to_bytes ephemeral_public);
-  (recipient, recipient_public)
+  let sender =
+    match member_int "mode" vector with
+    | 2 | 3 ->
+        Some
+          (derive_key_pair_of vector kem ~role:"sender" ~ikm:"ikmS"
+             ~private_key:"skSm" ~public_key:"pkSm")
+    | _ -> None
+  in
+  (recipient, sender)
 
 let setup_sender : type capability.
     capability Suite.t ->
     rng:Mirage_crypto_rng.g ->
     recipient:Public_key.t ->
+    sender:Private_key.t option ->
     psk:Psk.t option ->
     info:string ->
     (capability Rfc9180.sender_setup, Error.t) result =
- fun suite ~rng ~recipient ~psk ~info ->
-  match psk with
-  | None -> Rfc9180.setup_base_sender ~rng suite ~recipient ~info
-  | Some psk -> Rfc9180.setup_psk_sender ~rng suite ~recipient ~psk ~info
+ fun suite ~rng ~recipient ~sender ~psk ~info ->
+  match (sender, psk) with
+  | None, None -> Rfc9180.setup_base_sender ~rng suite ~recipient ~info
+  | None, Some psk -> Rfc9180.setup_psk_sender ~rng suite ~recipient ~psk ~info
+  | Some sender, None ->
+      Rfc9180.setup_auth_sender ~rng suite ~recipient ~sender ~info
+  | Some sender, Some psk ->
+      Rfc9180.setup_auth_psk_sender ~rng suite ~recipient ~sender ~psk ~info
 
 let setup_receiver : type capability.
     capability Suite.t ->
     recipient:Private_key.t ->
+    sender:Public_key.t option ->
     psk:Psk.t option ->
     encapsulated_key:string ->
     info:string ->
     (capability Rfc9180.Receiver.t, Error.t) result =
- fun suite ~recipient ~psk ~encapsulated_key ~info ->
-  match psk with
-  | None -> Rfc9180.setup_base_receiver suite ~recipient ~encapsulated_key ~info
-  | Some psk ->
+ fun suite ~recipient ~sender ~psk ~encapsulated_key ~info ->
+  match (sender, psk) with
+  | None, None ->
+      Rfc9180.setup_base_receiver suite ~recipient ~encapsulated_key ~info
+  | None, Some psk ->
       Rfc9180.setup_psk_receiver suite ~recipient ~psk ~encapsulated_key ~info
+  | Some sender, None ->
+      Rfc9180.setup_auth_receiver suite ~recipient ~sender ~encapsulated_key
+        ~info
+  | Some sender, Some psk ->
+      Rfc9180.setup_auth_psk_receiver suite ~recipient ~sender ~psk
+        ~encapsulated_key ~info
 
 let check_exports vector sender receiver =
   vector |> member "exports" |> to_list
@@ -143,22 +167,25 @@ let check_exports vector sender receiver =
 
 let test_encryption_vector vector kem kdf aead =
   let suite = Suite.create ~kem ~kdf ~aead in
-  let recipient, recipient_public = prepare_keys vector kem in
+  let (recipient, recipient_public), sender_keys = prepare_keys vector kem in
   let psk = psk vector in
   let info = member_hex "info" vector in
   let sender =
     ok
       (setup_sender suite
          ~rng:(fixed_rng (member_hex "ikmE" vector))
-         ~recipient:recipient_public ~psk ~info)
+         ~recipient:recipient_public
+         ~sender:(Option.map fst sender_keys)
+         ~psk ~info)
   in
   check_hex "encapsulated key"
     (member_string "enc" vector)
     sender.encapsulated_key;
   let receiver =
     ok
-      (setup_receiver suite ~recipient ~psk
-         ~encapsulated_key:(member_hex "enc" vector) ~info)
+      (setup_receiver suite ~recipient
+         ~sender:(Option.map snd sender_keys)
+         ~psk ~encapsulated_key:(member_hex "enc" vector) ~info)
   in
   vector |> member "encryptions" |> to_list
   |> List.iteri (fun index encryption ->
@@ -179,22 +206,25 @@ let test_encryption_vector vector kem kdf aead =
 
 let test_export_vector vector kem kdf =
   let suite = Suite.export_only ~kem ~kdf in
-  let recipient, recipient_public = prepare_keys vector kem in
+  let (recipient, recipient_public), sender_keys = prepare_keys vector kem in
   let psk = psk vector in
   let info = member_hex "info" vector in
   let sender =
     ok
       (setup_sender suite
          ~rng:(fixed_rng (member_hex "ikmE" vector))
-         ~recipient:recipient_public ~psk ~info)
+         ~recipient:recipient_public
+         ~sender:(Option.map fst sender_keys)
+         ~psk ~info)
   in
   check_hex "encapsulated key"
     (member_string "enc" vector)
     sender.encapsulated_key;
   let receiver =
     ok
-      (setup_receiver suite ~recipient ~psk
-         ~encapsulated_key:(member_hex "enc" vector) ~info)
+      (setup_receiver suite ~recipient
+         ~sender:(Option.map snd sender_keys)
+         ~psk ~encapsulated_key:(member_hex "enc" vector) ~info)
   in
   check_exports vector sender.context receiver
 
@@ -213,14 +243,22 @@ let setup_deterministic_sender : type capability.
     capability Suite.t ->
     ephemeral:Private_key.t ->
     recipient:Public_key.t ->
+    sender:Private_key.t option ->
     psk:Psk.t option ->
     info:string ->
     (capability Rfc9180.sender_setup, Error.t) result =
- fun suite ~ephemeral ~recipient ~psk ~info ->
-  match psk with
-  | None -> Hpke_for_testing.setup_base_sender suite ~ephemeral ~recipient ~info
-  | Some psk ->
+ fun suite ~ephemeral ~recipient ~sender ~psk ~info ->
+  match (sender, psk) with
+  | None, None ->
+      Hpke_for_testing.setup_base_sender suite ~ephemeral ~recipient ~info
+  | None, Some psk ->
       Hpke_for_testing.setup_psk_sender suite ~ephemeral ~recipient ~psk ~info
+  | Some sender, None ->
+      Hpke_for_testing.setup_auth_sender suite ~ephemeral ~recipient ~sender
+        ~info
+  | Some sender, Some psk ->
+      Hpke_for_testing.setup_auth_psk_sender suite ~ephemeral ~recipient ~sender
+        ~psk ~info
 
 let check_sender_exports vector sender =
   vector |> member "exports" |> to_list
@@ -235,8 +273,15 @@ let check_sender_exports vector sender =
 
 let test_deterministic_sender vector =
   let kem = kem vector and kdf = kdf vector in
-  let _, recipient = prepare_keys vector kem in
+  let (_, recipient), sender_keys = prepare_keys vector kem in
   let ephemeral = ok (Private_key.of_bytes ~kem (member_hex "skEm" vector)) in
+  (* Like the ephemeral key, the sender's static key is parsed from its
+     published serialization. *)
+  let sender =
+    Option.map
+      (fun _ -> ok (Private_key.of_bytes ~kem (member_hex "skSm" vector)))
+      sender_keys
+  in
   let psk = psk vector in
   let info = member_hex "info" vector in
   match member_int "aead_id" vector with
@@ -245,7 +290,7 @@ let test_deterministic_sender vector =
         ok
           (setup_deterministic_sender
              (Suite.export_only ~kem ~kdf)
-             ~ephemeral ~recipient ~psk ~info)
+             ~ephemeral ~recipient ~sender ~psk ~info)
       in
       check_hex "encapsulated key"
         (member_string "enc" vector)
@@ -257,7 +302,7 @@ let test_deterministic_sender vector =
         ok
           (setup_deterministic_sender
              (Suite.create ~kem ~kdf ~aead)
-             ~ephemeral ~recipient ~psk ~info)
+             ~ephemeral ~recipient ~sender ~psk ~info)
       in
       check_hex "encapsulated key"
         (member_string "enc" vector)
@@ -292,7 +337,7 @@ let test_unlabeled_kdf vector =
     ^ i2osp2 aead_id
   in
   let psk_secret =
-    match member_int "mode" vector with 0 -> "" | _ -> member_hex "psk" vector
+    match psk vector with None -> "" | Some _ -> member_hex "psk" vector
   in
   let secret =
     Kdf.extract kdf
@@ -352,7 +397,7 @@ let () =
   let path = Sys.getenv "HPKE_TEST_VECTORS" in
   let document = Yojson.Safe.from_file path in
   let vectors = document |> member "vectors" |> to_list in
-  Alcotest.(check int) "supported vector count" 64 (List.length vectors);
+  Alcotest.(check int) "supported vector count" 128 (List.length vectors);
   let tests_of test vectors =
     List.map
       (fun vector ->
