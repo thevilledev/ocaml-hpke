@@ -20,6 +20,13 @@
 - Check X25519 and X448 private-key clamping against literal bytes. The vector
   corpus cannot: it compares serializations that have both passed through the
   library's own clamp, and the primitives clamp again when they use a scalar.
+- Parse the Diffie-Hellman secret once per private key, and not on every
+  exchange. Parsing derives the public key, a scalar multiplication whose
+  result every exchange discarded. X25519 and X448 have no shortcut for the
+  base point, so there it cost as much as the exchange itself: setting up a
+  receiver is up to twice as fast and setting up a sender up to half again as
+  fast. The NIST curves multiply the base point from a table and gain a little
+  over a tenth.
 - Keep the RFC 9180 wire behavior of the existing KEMs unchanged from 0.2.0.
 
 ## 0.2.0 — 2026-09-18

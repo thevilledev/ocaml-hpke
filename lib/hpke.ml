@@ -363,28 +363,51 @@ module Public_key = struct
   let kem key = key.kem
 end
 
+(* Parsing a secret derives its public key, a scalar multiplication that for
+   X25519 and X448 costs as much as the exchange itself. A secret is therefore
+   parsed once, with its key, and kept. *)
+type dh_secret =
+  | P256_secret of Mirage_crypto_ec.P256.Dh.secret
+  | P384_secret of Mirage_crypto_ec.P384.Dh.secret
+  | P521_secret of Mirage_crypto_ec.P521.Dh.secret
+  | X25519_secret of Mirage_crypto_ec.X25519.secret
+  | X448_secret of Curve448.X448.secret
+
 let dh_secret_and_public kem bytes =
   let parsed =
     match kem with
     | Kem.P256 ->
-        Result.map snd
+        Result.map
+          (fun (secret, public) -> (P256_secret secret, public))
           (Mirage_crypto_ec.P256.Dh.secret_of_octets ~compress:false bytes)
     | Kem.P384 ->
-        Result.map snd
+        Result.map
+          (fun (secret, public) -> (P384_secret secret, public))
           (Mirage_crypto_ec.P384.Dh.secret_of_octets ~compress:false bytes)
     | Kem.P521 ->
-        Result.map snd
+        Result.map
+          (fun (secret, public) -> (P521_secret secret, public))
           (Mirage_crypto_ec.P521.Dh.secret_of_octets ~compress:false bytes)
     | Kem.X25519 ->
-        Result.map snd (Mirage_crypto_ec.X25519.secret_of_octets bytes)
-    | Kem.X448 -> Result.map snd (Curve448.X448.secret_of_octets bytes)
+        Result.map
+          (fun (secret, public) -> (X25519_secret secret, public))
+          (Mirage_crypto_ec.X25519.secret_of_octets bytes)
+    | Kem.X448 ->
+        Result.map
+          (fun (secret, public) -> (X448_secret secret, public))
+          (Curve448.X448.secret_of_octets bytes)
   in
   Result.map_error
     (fun error -> Error.Invalid_private_key (Util.ec_error error))
     parsed
 
 module Private_key = struct
-  type t = { kem : Kem.id; bytes : string; public_key : Public_key.t }
+  type t = {
+    kem : Kem.id;
+    bytes : string;
+    secret : dh_secret;
+    public_key : Public_key.t;
+  }
 
   let of_bytes ~kem bytes =
     if String.length bytes <> Kem.private_key_size kem then
@@ -400,9 +423,9 @@ module Private_key = struct
               Error
                 (Error.Invalid_private_key "scalar is outside the valid range")
       in
-      let* public_bytes = dh_secret_and_public kem bytes in
+      let* secret, public_bytes = dh_secret_and_public kem bytes in
       let* public_key = Public_key.of_bytes ~kem public_bytes in
-      Ok { kem; bytes; public_key }
+      Ok { kem; bytes; secret; public_key }
 
   let to_bytes key = key.bytes
   let kem key = key.kem
@@ -536,57 +559,22 @@ let dh private_key public_key =
   if Private_key.kem private_key <> Public_key.kem public_key then
     Error Error.Key_mismatch
   else
-    let secret = Private_key.to_bytes private_key in
     let public = Public_key.to_bytes public_key in
-    let result =
-      match Private_key.kem private_key with
-      | Kem.P256 ->
-          let* secret, _ =
-            Result.map_error
-              (fun error -> Error.Internal_error (Util.ec_error error))
-              (Mirage_crypto_ec.P256.Dh.secret_of_octets secret)
-          in
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Mirage_crypto_ec.P256.Dh.key_exchange secret public)
-      | Kem.P384 ->
-          let* secret, _ =
-            Result.map_error
-              (fun error -> Error.Internal_error (Util.ec_error error))
-              (Mirage_crypto_ec.P384.Dh.secret_of_octets secret)
-          in
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Mirage_crypto_ec.P384.Dh.key_exchange secret public)
-      | Kem.P521 ->
-          let* secret, _ =
-            Result.map_error
-              (fun error -> Error.Internal_error (Util.ec_error error))
-              (Mirage_crypto_ec.P521.Dh.secret_of_octets secret)
-          in
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Mirage_crypto_ec.P521.Dh.key_exchange secret public)
-      | Kem.X25519 ->
-          let* secret, _ =
-            Result.map_error
-              (fun error -> Error.Internal_error (Util.ec_error error))
-              (Mirage_crypto_ec.X25519.secret_of_octets secret)
-          in
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Mirage_crypto_ec.X25519.key_exchange secret public)
-      | Kem.X448 ->
-          let* secret, _ =
-            Result.map_error
-              (fun error -> Error.Internal_error (Util.ec_error error))
-              (Curve448.X448.secret_of_octets secret)
-          in
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Curve448.X448.key_exchange secret public)
+    let exchanged =
+      match private_key.Private_key.secret with
+      | P256_secret secret ->
+          Mirage_crypto_ec.P256.Dh.key_exchange secret public
+      | P384_secret secret ->
+          Mirage_crypto_ec.P384.Dh.key_exchange secret public
+      | P521_secret secret ->
+          Mirage_crypto_ec.P521.Dh.key_exchange secret public
+      | X25519_secret secret ->
+          Mirage_crypto_ec.X25519.key_exchange secret public
+      | X448_secret secret -> Curve448.X448.key_exchange secret public
     in
-    result
+    Result.map_error
+      (fun error -> Error.Invalid_public_key (Util.ec_error error))
+      exchanged
 
 let extract_and_expand kem ~dh ~kem_context =
   let eae_prk = Labeled_kdf.kem_extract kem ~salt:"" ~label:"eae_prk" dh in
