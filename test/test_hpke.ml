@@ -490,6 +490,40 @@ let malformed_inputs () =
     (Rfc9180.setup_base_receiver x25519_aes_suite ~recipient
        ~encapsulated_key:(String.make 31 '\000') ~info:"")
 
+let montgomery_private_key_clamping () =
+  (* RFC 9180, Section 7.1.2, requires DeserializePrivateKey and
+     SerializePrivateKey to clamp as RFC 7748, Section 5, does.
+     decodeScalar25519 clears the three least significant bits of the first byte
+     and the most significant bit of the last, and sets the second most
+     significant bit of the last. The expected bytes are literals: the vector
+     corpus compares serializations that have both passed through the library's
+     own clamp, and the primitive clamps again when it uses a scalar, so neither
+     would notice a wrong clamp here. *)
+  List.iter
+    (fun (name, kem, every_bit_set, no_bit_set) ->
+      let size = Kem.private_key_size kem in
+      let parse bytes = ok (Private_key.of_bytes ~kem bytes) in
+      let all_set = parse (String.make size '\xff') in
+      check_hex (name ^ " every bit set") every_bit_set
+        (Private_key.to_bytes all_set);
+      check_hex (name ^ " no bit set") no_bit_set
+        (Private_key.to_bytes (parse (String.make size '\x00')));
+      let reparsed = parse (Private_key.to_bytes all_set) in
+      Alcotest.(check string)
+        (name ^ " clamping is idempotent")
+        (Private_key.to_bytes all_set)
+        (Private_key.to_bytes reparsed);
+      Alcotest.(check string)
+        (name ^ " both encodings name one key")
+        (Public_key.to_bytes (Private_key.public_key all_set))
+        (Public_key.to_bytes (Private_key.public_key reparsed)))
+    [
+      ( "X25519",
+        Kem.X25519,
+        "f8" ^ String.make 60 'f' ^ "7f",
+        String.make 62 '0' ^ "40" );
+    ]
+
 let normalized_single_shot_error () =
   let generator = rng () in
   let recipient, public = ok (generate_key_pair ~rng:generator Kem.X25519) in
@@ -896,6 +930,8 @@ let () =
           Alcotest.test_case "failed open retains sequence" `Quick
             failed_open_does_not_advance;
           Alcotest.test_case "malformed inputs" `Quick malformed_inputs;
+          Alcotest.test_case "Montgomery private-key clamping" `Quick
+            montgomery_private_key_clamping;
           Alcotest.test_case "single-shot error normalization" `Quick
             normalized_single_shot_error;
           Alcotest.test_case "adversarial mismatches" `Quick
