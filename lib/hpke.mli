@@ -319,7 +319,8 @@ module Rfc9180 : sig
     encapsulated_key:string ->
     info:string ->
     ('capability Receiver.t, Error.t) result
-  (** Establish an AuthPSK-mode receiver context. *)
+  (** Establish an AuthPSK-mode receiver context. Errors are reported as by
+      {!setup_auth_receiver}. *)
 
   val seal_base :
     rng:Mirage_crypto_rng.g ->
@@ -407,7 +408,8 @@ module Rfc9180 : sig
     aad:string ->
     ciphertext:ciphertext ->
     (string, Error.t) result
-  (** Open one AuthPSK-mode message with normalized peer failure. *)
+  (** Open one AuthPSK-mode message. Failures are reported as by {!open_auth}.
+  *)
 end
 
 (**/**)

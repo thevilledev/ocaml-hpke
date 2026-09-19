@@ -113,9 +113,9 @@ Rfc9180.open_auth suite ~recipient:recipient_private
 ```
 
 The message opens only as coming from the holder of that key, but this is not
-a signature. Whoever holds the recipient's private key can seal as any sender,
-so a recipient cannot prove to anyone else who sent a message: see
-[SECURITY.md](SECURITY.md). The successor draft of HPKE drops both modes; they
+a signature. Whoever holds the recipient's private key, and in AuthPSK mode the
+PSK as well, can seal as any sender, so a recipient cannot prove to anyone else
+who sent a message: see [SECURITY.md](SECURITY.md). The successor draft of HPKE drops both modes; they
 stay in `Hpke.Rfc9180`, whose wire behavior does not change.
 
 ## Context rules

@@ -3,7 +3,7 @@ synopsis: "Idiomatic RFC 9180 Hybrid Public Key Encryption for OCaml"
 description: """
 An idiomatic, misuse-resistant implementation of the RFC 9180 HPKE Base, PSK,
 Auth, and AuthPSK modes. Cryptographic primitives are delegated to Mirage
-Crypto and Digestif.
+Crypto, curve448, Digestif, and kdf.
 """
 maintainer: ["Ville Vesilehto <ville@vesilehto.fi>"]
 authors: ["Ville Vesilehto <ville@vesilehto.fi>"]
