@@ -41,14 +41,16 @@ let ( let* ) = Result.bind</code></pre>
 
       <h2 id="install">Install</h2>
 
-      <pre><code>opam pin add hpke \
-  git+https://github.com/thevilledev/ocaml-hpke.git#v0.1.0</code></pre>
+      <pre><code>opam install hpke</code></pre>
 
       <p>
-        The package is not in opam-repository yet, so install it from the
-        tagged source. <code>opam install hpke</code> replaces the pin once it
-        is published.
+        opam-repository has carried the package since 0.1.1. It takes a new
+        release only after review, so it can trail the newest tag. To build
+        against 0.2.0 before it lands there, pin the tagged source:
       </p>
+
+      <pre><code>opam pin add hpke \
+  git+https://github.com/thevilledev/ocaml-hpke.git#v0.2.0</code></pre>
 
       <p>Then depend on the library from dune:</p>
 
