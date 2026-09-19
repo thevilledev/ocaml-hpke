@@ -626,8 +626,8 @@ let decap recipient ~sender ~encapsulated_key =
     | result -> result
   in
   let* ephemeral_dh = ephemeral_dh in
-  (* A sender key that fails validation is the caller's input, not the peer's
-     encapsulation, so it stays an invalid public key. *)
+  (* A sender key that fails validation is not part of the encapsulation, so it
+     stays an invalid public key. *)
   let* static_dh, sender_public =
     match sender with
     | None -> Ok ("", "")

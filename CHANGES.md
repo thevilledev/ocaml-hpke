@@ -20,8 +20,9 @@
   `seal_auth_psk`, and `open_auth_psk`. The sender passes its `Private_key.t`
   and the recipient the sender's `Public_key.t`, both as `~sender`; a key of
   another KEM is a `Key_mismatch`. Sender authentication is not a signature:
-  whoever holds the recipient's private key can seal as any sender. The
-  additions are new functions only, so existing callers are unaffected.
+  whoever holds the recipient's private key, and in AuthPSK mode the PSK as
+  well, can seal as any sender. The additions are new functions only, so
+  existing callers are unaffected.
 - Add `setup_auth_sender` and `setup_auth_psk_sender` to `hpke.for_testing`.
 - Grow the pinned RFC 9180 corpus from 48 to 128 cases, every vector of the
   same CFRG commit: the 16 X448 Base and PSK vectors, and the 64 Auth and

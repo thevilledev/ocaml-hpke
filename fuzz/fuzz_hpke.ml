@@ -92,8 +92,9 @@ let setup_receiver suite_case mode ~encapsulated_key ~info ~psk =
       Rfc9180.setup_auth_psk_receiver suite ~recipient ~sender ~psk
         ~encapsulated_key ~info
 
-(* Pads or truncates to [size], so that most inputs reach the key-exchange
-   validation instead of failing the length check. *)
+(* Pads or truncates to [size], so that X25519 and X448 inputs reach the
+   key-exchange validation instead of failing the length check. Padded NIST
+   encodings rarely parse either way. *)
 let fit size bytes =
   if String.length bytes >= size then String.sub bytes 0 size
   else bytes ^ String.make (size - String.length bytes) '\000'
@@ -135,7 +136,12 @@ let () =
        ->
       let suite_case, mode = List.nth mode_cases selector in
       let psk = fuzz_psk psk_secret psk_id in
-      ignore (setup_receiver suite_case mode ~encapsulated_key ~info ~psk);
+      (* Every key but the encapsulation is valid, so that is all that can be
+         reported. *)
+      (match setup_receiver suite_case mode ~encapsulated_key ~info ~psk with
+      | Ok _ | Error (Error.Invalid_encapsulation _) -> ()
+      | Error error ->
+          Crowbar.failf "%s receiver setup: %a" suite_case.name Error.pp error);
       match
         setup_receiver suite_case mode
           ~encapsulated_key:suite_case.encapsulated_key ~info ~psk

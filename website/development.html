@@ -63,7 +63,7 @@ dune runtest</code></pre>
           <tr><th scope="row">Suites</th><td>All 45 Base combinations, PSK, Auth, and AuthPSK across every KEM, and export-only agreement.</td></tr>
           <tr><th scope="row">Invariants</th><td>Sequence retention after a failed open, malformed inputs, X25519 and X448 private-key clamping, single-shot error normalization, adversarial mismatches, and mismatched modes and senders.</td></tr>
           <tr><th scope="row">Suite primitives</th><td>Algorithm sizes, bounds of the unlabeled KDF, and single-shot AEAD round trips, tampering, and length checks.</td></tr>
-          <tr><th scope="row">For testing</th><td>The deterministic senders of all four modes: repeatability, agreement with an ordinary receiver, and KEM mismatches.</td></tr>
+          <tr><th scope="row">For testing</th><td>The deterministic senders: agreement with an ordinary receiver in all four modes, repeatability, and ephemeral, recipient, and sender keys of another KEM.</td></tr>
           <tr><th scope="row">Properties</th><td>QCheck round-trip and peer-input totality.</td></tr>
         </tbody>
       </table>

@@ -78,16 +78,16 @@ let serialized_private_key kem encoded =
       Private_key.of_bytes ~kem (hex encoded) |> ok |> Private_key.to_bytes
   | Kem.P256 | Kem.P384 | Kem.P521 -> hex encoded
 
-let derive_key_pair_of vector kem ~role ~ikm ~private_key ~public_key =
+let derive_key_pair_of vector kem ~role ~ikm_field ~sk_field ~pk_field =
   let derived_private, derived_public =
-    ok (derive_key_pair kem ~ikm:(member_hex ikm vector))
+    ok (derive_key_pair kem ~ikm:(member_hex ikm_field vector))
   in
   Alcotest.(check string)
     (role ^ " private key")
-    (serialized_private_key kem (member_string private_key vector))
+    (serialized_private_key kem (member_string sk_field vector))
     (Private_key.to_bytes derived_private);
   check_hex (role ^ " public key")
-    (member_string public_key vector)
+    (member_string pk_field vector)
     (Public_key.to_bytes derived_public);
   (derived_private, derived_public)
 
@@ -95,19 +95,19 @@ let derive_key_pair_of vector kem ~role ~ikm ~private_key ~public_key =
    Auth and AuthPSK modes. *)
 let prepare_keys vector kem =
   let recipient =
-    derive_key_pair_of vector kem ~role:"recipient" ~ikm:"ikmR"
-      ~private_key:"skRm" ~public_key:"pkRm"
+    derive_key_pair_of vector kem ~role:"recipient" ~ikm_field:"ikmR"
+      ~sk_field:"skRm" ~pk_field:"pkRm"
   in
   let _ephemeral =
-    derive_key_pair_of vector kem ~role:"ephemeral" ~ikm:"ikmE"
-      ~private_key:"skEm" ~public_key:"pkEm"
+    derive_key_pair_of vector kem ~role:"ephemeral" ~ikm_field:"ikmE"
+      ~sk_field:"skEm" ~pk_field:"pkEm"
   in
   let sender =
     match member_int "mode" vector with
     | 2 | 3 ->
         Some
-          (derive_key_pair_of vector kem ~role:"sender" ~ikm:"ikmS"
-             ~private_key:"skSm" ~public_key:"pkSm")
+          (derive_key_pair_of vector kem ~role:"sender" ~ikm_field:"ikmS"
+             ~sk_field:"skSm" ~pk_field:"pkSm")
     | _ -> None
   in
   (recipient, sender)

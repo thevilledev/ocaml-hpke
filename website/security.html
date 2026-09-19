@@ -79,8 +79,10 @@
         differs from the suite's is a local configuration mistake, not something
         a peer can provoke, so it stays distinguishable and debuggable. The
         context-level <code>setup_base_receiver</code> likewise reports
-        malformed encapsulations structurally, because at that level the caller
-        is assumed to be diagnosing its own inputs.
+        malformed encapsulations structurally, and
+        <code>setup_auth_receiver</code> a sender key that fails validation,
+        because at that level the caller is assumed to be diagnosing its own
+        inputs.
       </p>
 
       <h2 id="limits">What it does not defend against</h2>
@@ -110,7 +112,7 @@
           <tbody>
             <tr>
               <td><a href="https://www.rfc-editor.org/rfc/rfc9180.html">RFC 9180</a> Appendix A, pinned at CFRG commit <code>5f503c5</code></td>
-              <td>A.1.1 X25519/HKDF-SHA256/AES-128-GCM Base, A.1.2 to A.1.4 the same suite in the PSK, Auth, and AuthPSK modes, A.2.1 X25519/HKDF-SHA256/ChaCha20-Poly1305 Base. The machine-readable corpus of the same commit is replayed in full: 128 vectors over the four modes, P-256, P-521, X25519, X448, and every AEAD.</td>
+              <td>A.1.1 X25519/HKDF-SHA256/AES-128-GCM Base, A.1.2 to A.1.4 the same suite in the PSK, Auth, and AuthPSK modes, A.2.1 X25519/HKDF-SHA256/ChaCha20-Poly1305 Base. Every vector of the same commit's machine-readable corpus is replayed as well: 128 over the four modes, P-256, P-521, X25519, X448, and every AEAD.</td>
             </tr>
             <tr>
               <td><code>draft-ietf-hpke-hpke-04</code>, pinned at HPKE working-group commit <code>4abc37e</code></td>
