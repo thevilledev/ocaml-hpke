@@ -376,15 +376,18 @@ module Private_key = struct
     if String.length bytes <> Kem.private_key_size kem then
       Error (Error.Invalid_private_key "wrong encoded length")
     else
-      let bytes =
-        match kem with Kem.X25519 -> Util.normalize_x25519 bytes | _ -> bytes
+      let* bytes =
+        match kem with
+        | Kem.X25519 -> Ok (Util.normalize_x25519 bytes)
+        | Kem.P256 | Kem.P384 | Kem.P521 ->
+            if valid_nist_scalar kem bytes then Ok bytes
+            else
+              Error
+                (Error.Invalid_private_key "scalar is outside the valid range")
       in
-      if kem <> Kem.X25519 && not (valid_nist_scalar kem bytes) then
-        Error (Error.Invalid_private_key "scalar is outside the valid range")
-      else
-        let* public_bytes = dh_secret_and_public kem bytes in
-        let* public_key = Public_key.of_bytes ~kem public_bytes in
-        Ok { kem; bytes; public_key }
+      let* public_bytes = dh_secret_and_public kem bytes in
+      let* public_key = Public_key.of_bytes ~kem public_bytes in
+      Ok { kem; bytes; public_key }
 
   let to_bytes key = key.bytes
   let kem key = key.kem
