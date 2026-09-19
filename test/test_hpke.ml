@@ -44,6 +44,9 @@ let plaintext = hex "4265617574792069732074727574682c20747275746820626561757479"
 let x25519_aes_suite =
   Suite.create ~kem:Kem.X25519 ~kdf:Kdf.Hkdf_sha256 ~aead:Aead.Aes_128_gcm
 
+let x448_aes_suite =
+  Suite.create ~kem:Kem.X448 ~kdf:Kdf.Hkdf_sha512 ~aead:Aead.Aes_256_gcm
+
 let rfc9180_base_vector () =
   (* RFC 9180, Appendix A.1.1. The provenance is pinned in
      test-vectors/PROVENANCE.md. *)
@@ -356,7 +359,7 @@ let go_p384_differential_fixture () =
     "47ea0642c86be35bd2fba04bae1679bd2f6da2622e8b7d464165341f10d0bf659ff69cad1d18a8e0765ee2063e829f6f"
     (ok (Rfc9180.Receiver.export context ~context:"export-context" ~length:48))
 
-let all_kems = [ Kem.P256; Kem.P384; Kem.P521; Kem.X25519 ]
+let all_kems = [ Kem.P256; Kem.P384; Kem.P521; Kem.X25519; Kem.X448 ]
 let all_kdfs = [ Kdf.Hkdf_sha256; Kdf.Hkdf_sha384; Kdf.Hkdf_sha512 ]
 let all_aeads = [ Aead.Aes_128_gcm; Aead.Aes_256_gcm; Aead.Chacha20_poly1305 ]
 
@@ -463,32 +466,104 @@ let malformed_inputs () =
         (Private_key.of_bytes ~kem
            (String.make (Kem.private_key_size kem) '\000')))
     [ ("P-256", Kem.P256); ("P-384", Kem.P384); ("P-521", Kem.P521) ];
-  expect_error "short X25519 public key"
-    (Public_key.of_bytes ~kem:Kem.X25519 "x");
-  expect_error "short X25519 private key"
-    (Private_key.of_bytes ~kem:Kem.X25519 "x");
   expect_error "short PSK" (Psk.create ~secret:(String.make 31 'p') ~id:"id");
   expect_error "empty PSK id" (Psk.create ~secret:(String.make 32 'p') ~id:"");
   let generator = rng () in
-  let recipient, _ = ok (generate_key_pair ~rng:generator Kem.X25519) in
-  let low_order_encodings =
-    [ String.make 32 '\000'; "\001" ^ String.make 31 '\000' ]
-  in
-  List.iteri
-    (fun index encoding ->
-      let public = ok (Public_key.of_bytes ~kem:Kem.X25519 encoding) in
+  List.iter
+    (fun (name, kem, suite, low_order_encodings) ->
+      let size = Kem.public_key_size kem in
       expect_error
-        (Format.sprintf "low-order X25519 public key %d" index)
-        (Rfc9180.setup_base_sender ~rng:generator x25519_aes_suite
-           ~recipient:public ~info:"");
+        ("short " ^ name ^ " public key")
+        (Public_key.of_bytes ~kem "x");
       expect_error
-        (Format.sprintf "low-order X25519 encapsulation %d" index)
-        (Rfc9180.setup_base_receiver x25519_aes_suite ~recipient
-           ~encapsulated_key:encoding ~info:""))
-    low_order_encodings;
-  expect_error "short X25519 encapsulation"
-    (Rfc9180.setup_base_receiver x25519_aes_suite ~recipient
-       ~encapsulated_key:(String.make 31 '\000') ~info:"")
+        ("long " ^ name ^ " public key")
+        (Public_key.of_bytes ~kem (String.make (size + 1) '\000'));
+      expect_error
+        ("short " ^ name ^ " private key")
+        (Private_key.of_bytes ~kem "x");
+      expect_error
+        ("long " ^ name ^ " private key")
+        (Private_key.of_bytes ~kem
+           (String.make (Kem.private_key_size kem + 1) '\001'));
+      let recipient, _ = ok (generate_key_pair ~rng:generator kem) in
+      (* Every encoding of the right length parses; a low-order value is only
+         recognized by the all-zero Diffie-Hellman output it produces. *)
+      List.iteri
+        (fun index encoding ->
+          let public = ok (Public_key.of_bytes ~kem encoding) in
+          (match
+             Rfc9180.setup_base_sender ~rng:generator suite ~recipient:public
+               ~info:""
+           with
+          | Error (Error.Invalid_public_key _) -> ()
+          | _ -> Alcotest.failf "low-order %s public key %d" name index);
+          match
+            Rfc9180.setup_base_receiver suite ~recipient
+              ~encapsulated_key:encoding ~info:""
+          with
+          | Error (Error.Invalid_encapsulation _) -> ()
+          | _ -> Alcotest.failf "low-order %s encapsulation %d" name index)
+        low_order_encodings;
+      expect_error
+        ("short " ^ name ^ " encapsulation")
+        (Rfc9180.setup_base_receiver suite ~recipient
+           ~encapsulated_key:(String.make (size - 1) '\000')
+           ~info:""))
+    [
+      ( "X25519",
+        Kem.X25519,
+        x25519_aes_suite,
+        [ String.make 32 '\000'; "\001" ^ String.make 31 '\000' ] );
+      (* 0, 1, p - 1, and the unreduced p and p + 1, for p = 2^448 - 2^224 - 1.
+         RFC 7748 does not mask any bit of an X448 u-coordinate. *)
+      ( "X448",
+        Kem.X448,
+        x448_aes_suite,
+        [
+          String.make 56 '\000';
+          "\001" ^ String.make 55 '\000';
+          "\254" ^ String.make 27 '\255' ^ "\254" ^ String.make 27 '\255';
+          String.make 28 '\255' ^ "\254" ^ String.make 27 '\255';
+          String.make 28 '\000' ^ String.make 28 '\255';
+        ] );
+    ]
+
+let montgomery_private_key_clamping () =
+  (* RFC 9180, Section 7.1.2, requires DeserializePrivateKey and
+     SerializePrivateKey to clamp as RFC 7748, Section 5, does.
+     decodeScalar25519 clears the three least significant bits of the first byte
+     and the most significant bit of the last, and sets the second most
+     significant bit of the last. decodeScalar448 clears the two least
+     significant bits of the first byte and sets the most significant bit of the
+     last. The expected bytes are literals: the vector corpus compares
+     serializations that have both passed through the library's own clamp, and
+     the primitives clamp again when they use a scalar, so neither would notice
+     a wrong clamp here. *)
+  List.iter
+    (fun (name, kem, every_bit_set, no_bit_set) ->
+      let size = Kem.private_key_size kem in
+      let parse bytes = ok (Private_key.of_bytes ~kem bytes) in
+      let all_set = parse (String.make size '\xff') in
+      check_hex (name ^ " every bit set") every_bit_set
+        (Private_key.to_bytes all_set);
+      check_hex (name ^ " no bit set") no_bit_set
+        (Private_key.to_bytes (parse (String.make size '\x00')));
+      let reparsed = parse (Private_key.to_bytes all_set) in
+      Alcotest.(check string)
+        (name ^ " clamping is idempotent")
+        (Private_key.to_bytes all_set)
+        (Private_key.to_bytes reparsed);
+      Alcotest.(check string)
+        (name ^ " both encodings name one key")
+        (Public_key.to_bytes (Private_key.public_key all_set))
+        (Public_key.to_bytes (Private_key.public_key reparsed)))
+    [
+      ( "X25519",
+        Kem.X25519,
+        "f8" ^ String.make 60 'f' ^ "7f",
+        String.make 62 '0' ^ "40" );
+      ("X448", Kem.X448, "fc" ^ String.make 110 'f', String.make 110 '0' ^ "80");
+    ]
 
 let normalized_single_shot_error () =
   let generator = rng () in
@@ -538,6 +613,11 @@ let adversarial_mismatches () =
         Kdf.Hkdf_sha256,
         Aead.Chacha20_poly1305,
         Aead.Aes_128_gcm );
+      ( "X448/AES-256",
+        Kem.X448,
+        Kdf.Hkdf_sha512,
+        Aead.Aes_256_gcm,
+        Aead.Chacha20_poly1305 );
     ]
   in
   List.iter
@@ -652,9 +732,22 @@ let all_aeads = [ Aead.Aes_128_gcm; Aead.Aes_256_gcm; Aead.Chacha20_poly1305 ]
 let algorithm_sizes () =
   (* RFC 9180, Sections 7.1 to 7.3. *)
   List.iter
-    (fun (kem, expected) ->
-      Alcotest.(check int) "Nsecret" expected (Kem.secret_size kem))
-    [ (Kem.P256, 32); (Kem.P384, 48); (Kem.P521, 64); (Kem.X25519, 32) ];
+    (fun (kem, identifier, secret, public, private_) ->
+      Alcotest.(check int) "KEM identifier" identifier (Kem.to_int kem);
+      Alcotest.(check bool)
+        "KEM identifier round trip" true
+        (Kem.of_int identifier = Ok kem);
+      Alcotest.(check int) "Nsecret" secret (Kem.secret_size kem);
+      Alcotest.(check int) "Npk" public (Kem.public_key_size kem);
+      Alcotest.(check int) "Nenc" public (Kem.encapsulated_key_size kem);
+      Alcotest.(check int) "Nsk" private_ (Kem.private_key_size kem))
+    [
+      (Kem.P256, 0x0010, 32, 65, 32);
+      (Kem.P384, 0x0011, 48, 97, 48);
+      (Kem.P521, 0x0012, 64, 133, 66);
+      (Kem.X25519, 0x0020, 32, 32, 32);
+      (Kem.X448, 0x0021, 64, 56, 56);
+    ];
   List.iter
     (fun (kdf, expected) ->
       Alcotest.(check int) "Nh" expected (Kdf.hash_size kdf))
@@ -886,7 +979,7 @@ let () =
         ] );
       ( "suites",
         [
-          Alcotest.test_case "all 36 Base combinations" `Quick
+          Alcotest.test_case "all 45 Base combinations" `Quick
             all_suite_round_trips;
           Alcotest.test_case "PSK all KEMs" `Quick psk_round_trips;
           Alcotest.test_case "export-only" `Quick export_only;
@@ -896,6 +989,8 @@ let () =
           Alcotest.test_case "failed open retains sequence" `Quick
             failed_open_does_not_advance;
           Alcotest.test_case "malformed inputs" `Quick malformed_inputs;
+          Alcotest.test_case "Montgomery private-key clamping" `Quick
+            montgomery_private_key_clamping;
           Alcotest.test_case "single-shot error normalization" `Quick
             normalized_single_shot_error;
           Alcotest.test_case "adversarial mismatches" `Quick

@@ -72,9 +72,9 @@ let psk vector =
 
 let serialized_private_key kem encoded =
   match kem with
-  | Kem.X25519 ->
+  | Kem.X25519 | Kem.X448 ->
       (* RFC vectors retain the pre-clamping input; the public API serializes
-         canonical X25519 private keys after clamping. *)
+         canonical X25519 and X448 private keys after clamping. *)
       Private_key.of_bytes ~kem (hex encoded) |> ok |> Private_key.to_bytes
   | Kem.P256 | Kem.P384 | Kem.P521 -> hex encoded
 
@@ -352,7 +352,7 @@ let () =
   let path = Sys.getenv "HPKE_TEST_VECTORS" in
   let document = Yojson.Safe.from_file path in
   let vectors = document |> member "vectors" |> to_list in
-  Alcotest.(check int) "supported vector count" 48 (List.length vectors);
+  Alcotest.(check int) "supported vector count" 64 (List.length vectors);
   let tests_of test vectors =
     List.map
       (fun vector ->

@@ -27,6 +27,11 @@ disclosure after a fix is available.
   Sealing twice under one `(key, nonce)` pair forfeits both confidentiality
   and authenticity. Prefer a context, which sequences nonces itself, and derive
   a fresh key or nonce for every single-shot call.
+- `Kem.X448` is provided by `curve448`, which has not been independently
+  audited. Its implementations are written to avoid secret-dependent branches
+  and memory access, which has been checked with tools and not proven. Read its
+  [security policy](https://github.com/thevilledev/ocaml-curve448/blob/main/SECURITY.md)
+  for the limits before choosing X448.
 - A sender or receiver context is stateful. Serialize access at the application
   layer. `Concurrent_use` means no cryptography was performed by that call.
 - Treat `Open_error` uniformly at protocol boundaries. Do not build an oracle

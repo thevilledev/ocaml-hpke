@@ -120,11 +120,11 @@
             </tr>
             <tr>
               <td>Suite coverage</td>
-              <td>All 36 Base combinations round-tripped, PSK across every KEM, and sender/receiver agreement on export-only suites.</td>
+              <td>All 45 Base combinations round-tripped, PSK across every KEM, and sender/receiver agreement on export-only suites.</td>
             </tr>
             <tr>
               <td>Invariants</td>
-              <td>A failed open retains sequence state; malformed encodings, off-curve points, invalid scalars, low-order X25519 values, and tampering are rejected; single-shot errors are normalized; suite and key mismatches are reported.</td>
+              <td>A failed open retains sequence state; malformed encodings, off-curve points, invalid scalars, low-order X25519 and X448 values, and tampering are rejected; X25519 and X448 private keys are clamped as RFC 7748 specifies; single-shot errors are normalized; suite and key mismatches are reported.</td>
             </tr>
             <tr>
               <td>Property tests (QCheck)</td>
@@ -132,7 +132,7 @@
             </tr>
             <tr>
               <td>Fuzzing (Crowbar)</td>
-              <td>Key parsing across all four KEMs, receiver setup on arbitrary encapsulations, and opening arbitrary ciphertexts. CI runs 1,000 iterations per push.</td>
+              <td>Key parsing across all five KEMs, receiver setup on arbitrary encapsulations, and opening arbitrary ciphertexts. CI runs 1,000 iterations per push.</td>
             </tr>
             <tr>
               <td>Concurrency</td>

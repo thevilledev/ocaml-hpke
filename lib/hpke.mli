@@ -27,7 +27,7 @@ end
 
 module Kem : sig
   (** The closed registry of supported RFC 9180 KEM identifiers. *)
-  type id = P256 | P384 | P521 | X25519
+  type id = P256 | P384 | P521 | X25519 | X448
 
   val to_int : id -> int
   val of_int : int -> (id, Error.t) result
@@ -126,7 +126,8 @@ module Public_key : sig
 
   val of_bytes : kem:Kem.id -> string -> (t, Error.t) result
   (** Parse an exact-length canonical encoding. NIST keys must use uncompressed
-      SEC1 form. X25519 low-order rejection occurs when the key is used. *)
+      SEC1 form. X25519 and X448 low-order rejection occurs when the key is
+      used. *)
 
   val to_bytes : t -> string
   val kem : t -> Kem.id
@@ -138,10 +139,12 @@ module Private_key : sig
       cannot be reliably zeroized by the OCaml garbage collector. *)
 
   val of_bytes : kem:Kem.id -> string -> (t, Error.t) result
-  (** Parse and validate an exact-length key. X25519 input is clamped. *)
+  (** Parse and validate an exact-length key. X25519 and X448 input is clamped.
+  *)
 
   val to_bytes : t -> string
-  (** Serialize the key. X25519 output is clamped as required by RFC 9180. *)
+  (** Serialize the key. X25519 and X448 output is clamped as required by RFC
+      9180. *)
 
   val kem : t -> Kem.id
   val public_key : t -> Public_key.t
