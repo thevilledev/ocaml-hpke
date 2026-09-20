@@ -3,8 +3,8 @@
 `hpke` is an idiomatic OCaml implementation of Hybrid Public Key Encryption
 ([RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html)). It exposes the
 Base, PSK, Auth, and AuthPSK modes under the explicitly versioned
-`Hpke.Rfc9180` module and delegates elliptic-curve, hash, and AEAD primitives
-to Mirage Crypto, `curve448`, Digestif, and `kdf`.
+`Hpke.Rfc9180` module and delegates elliptic-curve, ML-KEM, hash, and AEAD
+primitives to Mirage Crypto, `curve448`, `mlkem`, Digestif, and `kdf`.
 
 The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
@@ -26,15 +26,16 @@ Usage, ciphersuites, the security model, and development notes:
 
 | Component | Algorithms |
 | --- | --- |
-| KEM | P-256, P-384, P-521, X25519, X448 DHKEM |
+| KEM | P-256, P-384, P-521, X25519, X448 DHKEM; ML-KEM-512, ML-KEM-768, ML-KEM-1024 |
 | KDF | HKDF-SHA-256, HKDF-SHA-384, HKDF-SHA-512 |
 | AEAD | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, export-only |
-| Modes | RFC 9180 Base, PSK, Auth, and AuthPSK |
+| Modes | RFC 9180 Base, PSK, Auth, and AuthPSK; ML-KEM has the first two |
 
 | Feature scope | Status |
 | --- | --- |
 | RFC 9180 Base, PSK, Auth, AuthPSK, export-only, and the algorithms above | Implemented |
-| Post-quantum and hybrid KEMs | Deferred |
+| Post-quantum ML-KEM KEMs of `draft-ietf-hpke-pq`, in the Base and PSK modes | Implemented |
+| Post-quantum/traditional hybrid KEMs and SHA-3 KDFs of the same draft | Deferred |
 | HPKE-bis or another successor standard | Deferred to a new versioned module |
 | Application wire framing | Deferred to applications |
 
@@ -59,6 +60,44 @@ Both behave identically. With ocamlfind instead of dune, the `curve448`
 package holds only the interface, so link `curve448.ocaml` or `curve448.c`
 explicitly. `curve448` needs a 64-bit OCaml, so `hpke` is no longer
 installable on 32-bit architectures.
+
+## ML-KEM
+
+`Kem.Mlkem512`, `Kem.Mlkem768`, and `Kem.Mlkem1024` are the post-quantum KEMs
+of [FIPS 203](https://csrc.nist.gov/pubs/fips/203/final), as
+[`draft-ietf-hpke-pq`](https://datatracker.ietf.org/doc/draft-ietf-hpke-pq/)
+defines them for HPKE, provided by the pure OCaml
+[`mlkem`](https://github.com/thevilledev/ocaml-pq). They are a choice of KEM
+and nothing else changes: with an HKDF they run the RFC 9180 key schedule as
+it is.
+
+```ocaml
+let suite =
+  Suite.create ~kem:Kem.Mlkem768 ~kdf:Kdf.Hkdf_sha256 ~aead:Aead.Aes_128_gcm
+```
+
+What differs from a Diffie-Hellman KEM:
+
+- There is no Auth or AuthPSK mode. ML-KEM has no authenticated encapsulation,
+  so those functions return `Unsupported_mode`, and `Kem.supports_auth` tells
+  the two kinds of KEM apart. Use a PSK, or sign the encapsulated key and the
+  ciphertext.
+- A private key is the 64-byte seed that FIPS 203 generates a key pair from,
+  and not the expanded decapsulation key. Parsing one runs key generation, and
+  parsing a public key expands its matrix, so parse a key once and keep it.
+- Keys and encapsulated keys are large, and an encapsulated key is not the size
+  of a public key: 1,088 and 1,184 bytes for ML-KEM-768.
+- An encapsulated key of the right length never fails to decapsulate. One that
+  was tampered with gives the receiver a secret unrelated to the sender's
+  (implicit rejection), so `setup_base_receiver` succeeds and the first
+  `open_` returns `Open_error`.
+
+The draft is not yet an RFC. Encodings are those of FIPS 203 and are not
+expected to move, but `derive_key_pair` follows the draft, which derives the
+seed with SHAKE256, and changes if the draft does. That SHAKE256 is `mlkem`'s
+as well, the one ML-KEM itself runs on. The draft prefers ML-KEM-768 and
+ML-KEM-1024 to ML-KEM-512. See [SECURITY.md](SECURITY.md) for the audit status
+of `mlkem`.
 
 ## Example
 

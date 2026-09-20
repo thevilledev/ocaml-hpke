@@ -131,16 +131,18 @@
         An idiomatic OCaml implementation of Hybrid Public Key Encryption,
         <a href="https://www.rfc-editor.org/rfc/rfc9180.html">RFC 9180</a>. The
         Base, PSK, Auth, and AuthPSK modes live under the explicitly versioned
-        <code>Hpke.Rfc9180</code> module; elliptic-curve, hash, and AEAD
+        <code>Hpke.Rfc9180</code> module; elliptic-curve, ML-KEM, hash, and AEAD
         primitives are delegated to
         <a href="https://github.com/mirage/mirage-crypto">Mirage Crypto</a>,
         <a href="https://github.com/thevilledev/ocaml-curve448">curve448</a>,
+        <a href="https://github.com/thevilledev/ocaml-pq">mlkem</a>,
         <a href="https://github.com/mirage/digestif">Digestif</a>, and
         <a href="https://github.com/mirage/kdf">kdf</a>.
       </p>
 
       <ul>
-        <li>45 encryption ciphersuites and 15 export-only suites, from a closed registry.</li>
+        <li>72 encryption ciphersuites and 24 export-only suites, from a closed registry.</li>
+        <li>Diffie-Hellman KEMs and the post-quantum ML-KEM (FIPS 203), under one API.</li>
         <li>Secret keys and message contexts are abstract; a suite's capability keeps export-only suites out of <code>seal</code>.</li>
         <li>Every operation returns a <code>result</code>. Peer-controlled failures at protocol boundaries normalize to one error.</li>
         <li>Randomness is a parameter, never a global: the caller passes an explicit generator.</li>
@@ -157,10 +159,10 @@
             </tr>
           </thead>
           <tbody>
-            <tr><td>KEM</td><td>DHKEM over P-256, P-384, P-521, X25519, X448</td><td class="n">5</td></tr>
+            <tr><td>KEM</td><td>DHKEM over P-256, P-384, P-521, X25519, X448; ML-KEM-512, ML-KEM-768, ML-KEM-1024</td><td class="n">8</td></tr>
             <tr><td>KDF</td><td>HKDF-SHA256, HKDF-SHA384, HKDF-SHA512</td><td class="n">3</td></tr>
             <tr><td>AEAD</td><td>AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305</td><td class="n">3</td></tr>
-            <tr><td>Modes</td><td>Base, PSK, Auth, AuthPSK</td><td class="n">4</td></tr>
+            <tr><td>Modes</td><td>Base, PSK, Auth, AuthPSK; ML-KEM has the first two</td><td class="n">4</td></tr>
           </tbody>
         </table>
       </div>
@@ -188,7 +190,7 @@
           <tr><th scope="row">OCaml</th><td>4.14 or newer</td></tr>
           <tr><th scope="row">Dune</th><td>3.12 or newer</td></tr>
           <tr><th scope="row">Modes</th><td>Base, PSK, Auth, and AuthPSK</td></tr>
-          <tr><th scope="row">Ciphersuites</th><td>45, plus 15 export-only</td></tr>
+          <tr><th scope="row">Ciphersuites</th><td>72, plus 24 export-only</td></tr>
           <tr><th scope="row">License</th><td>ISC</td></tr>
         </tbody>
       </table>

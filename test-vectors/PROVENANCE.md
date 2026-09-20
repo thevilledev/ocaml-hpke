@@ -1,5 +1,7 @@
 # Test-vector provenance
 
+## RFC 9180 and its successor draft
+
 The hexadecimal fixtures embedded in `test/test_hpke.ml` are copied from
 Appendix A of [RFC 9180](https://www.rfc-editor.org/rfc/rfc9180.html), whose
 machine-readable source is pinned at CFRG commit
@@ -56,6 +58,60 @@ points, invalid scalars, low-order X25519 and X448 values (as recipient keys,
 encapsulations, and sender keys), private-key clamping, tampering, and error
 normalization.
 
+## ML-KEM
+
+`hpke-pq-supported.json` is a reproducible reduction of the machine-readable
+vectors of `draft-ietf-hpke-pq-05`, pinned at HPKE working-group commit
+[`6433c8fce0b8b749dfc86c1095081a88698ccfab`](https://github.com/hpkewg/hpke-pq/blob/6433c8fce0b8b749dfc86c1095081a88698ccfab/test-vectors.json),
+which carries the tag of that revision. It is the companion of the
+`draft-ietf-hpke-hpke-04` commit above, whose `LabeledDerive` and
+`EncapDerand` it builds on.
+
+The source holds 13 vectors, all in Base mode. Nine are for the hybrid KEMs or
+for Diffie-Hellman KEMs with the SHA-3 KDFs, neither of which this library
+implements. The corpus keeps the other four:
+
+- The three ML-KEM vectors that use an HKDF, in full: ML-KEM-512 and
+  ML-KEM-768 with HKDF-SHA256 and AES-128-GCM, and ML-KEM-1024 with HKDF-SHA384
+  and AES-256-GCM. Each has ten encryption records and five exports.
+- The ML-KEM-1024 vector that uses TurboSHAKE256, as `kem_only_vectors`. An
+  ML-KEM key pair and encapsulation depend on nothing else in the suite, so it
+  is still a known answer for both, and keeps the fields of those alone.
+
+`ikmR` is the input of `DeriveKeyPair`, and `skRm`, the 64-byte seed, and
+`pkRm` are its known answers. `ikmE` is the 32 bytes of randomness of the
+deterministic encapsulation: a generator that returns them makes the public
+API reproduce `enc`, and with it every ciphertext and export. These vectors
+publish `shared_secret`, `key`, `base_nonce`, and `exporter_secret`, and none
+of the intermediates between them. The test rebuilds the RFC 9180 key schedule
+from the first to the rest over the public `Kdf.extract` and `Kdf.expand`,
+which also shows that an ML-KEM suite with an HKDF uses that key schedule
+unchanged.
+
+Regenerate the corpus from the pinned source with:
+
+```sh
+python3 tools/extract_hpke_pq_vectors.py test-vectors.json \
+  test-vectors/hpke-pq-supported.json
+```
+
+The extractor checks the SHA-256 digest of the source and fails unless it
+selects exactly three full vectors, one for each parameter set, and one
+KEM-only vector.
+
+Every vector is in Base mode and takes a 64-byte `ikmR`, so the PSK mode over
+ML-KEM is covered by round trips alone, and `DeriveKeyPair` for other input
+lengths by the known answers below.
+
+`DeriveKeyPair` for ML-KEM is SHAKE256 over a framed input. The seeds it
+reaches from an empty and from a 200-byte `ikm`, embedded in
+`test/test_hpke.ml`, were computed with OpenSSL 3, through `hashlib.shake_256`
+of Python 3. The second spans two blocks of the sponge, which no 64-byte
+`ikmR` does. SHAKE256 itself is `Mlkem.Fips202.shake256` of `mlkem`, whose own
+suite holds it to OpenSSL's answers at the block boundaries of the sponge.
+
+## Go differential fixture
+
 The P-384 / HKDF-SHA384 / AES-256-GCM fixture was generated independently by
 Go 1.26.5's standard-library `crypto/hpke` implementation. The small generator
 is retained at `tools/differential/go/main.go`; it derives a fixed recipient
@@ -63,6 +119,8 @@ key, while its one-time random encapsulation and resulting ciphertext/exporter
 outputs are pinned in the OCaml test. Go's `crypto/hpke` offers Base mode
 only, so P-384 and HKDF-SHA384 have no known answer in the PSK, Auth, or
 AuthPSK modes; there they are covered by round trips.
+
+## Policy
 
 The repository does not silently update vectors from a moving branch. Changes
 to these fixtures must cite a standards revision and immutable source commit.

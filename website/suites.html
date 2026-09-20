@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="The KEM, KDF, and AEAD registries hpke implements, with RFC 9180 codepoints, sizes, limits, and deliberate omissions.">
+    <meta name="description" content="The KEM, KDF, and AEAD registries hpke implements, Diffie-Hellman and post-quantum ML-KEM, with codepoints, sizes, limits, and deliberate omissions.">
     <meta name="theme-color" content="#ffffff">
     <meta property="og:type" content="website">
     <meta property="og:title" content="hpke ciphersuites">
@@ -46,42 +46,91 @@ let exporter =
   Suite.export_only ~kem:Kem.P384 ~kdf:Kdf.Hkdf_sha384</code></pre>
 
       <p>
-        Five KEMs, three KDFs, and three AEADs give 45 encryption suites; every
+        Eight KEMs, three KDFs, and three AEADs give 72 encryption suites; every
         one of them is round-tripped by the test suite in Base mode. Dropping
-        the AEAD gives 15 further export-only suites.
+        the AEAD gives 24 further export-only suites.
       </p>
 
       <h2 id="kem">KEM</h2>
 
       <div class="table-scroll">
-        <table>
-          <caption>Key encapsulation mechanisms, all DHKEM</caption>
+        <table class="dense">
+          <caption>Key encapsulation mechanisms</caption>
           <thead>
             <tr>
               <th scope="col">Constructor</th>
-              <th scope="col">RFC 9180 name</th>
+              <th scope="col">Registry name</th>
               <th scope="col" class="n">ID</th>
-              <th scope="col" class="n">Public / enc</th>
+              <th scope="col" class="n">Public</th>
+              <th scope="col" class="n">Enc</th>
               <th scope="col" class="n">Private</th>
               <th scope="col" class="n">Secret</th>
+              <th scope="col">Auth</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td><code>Kem.P256</code></td><td>DHKEM(P-256, HKDF-SHA256)</td><td class="n">0x0010</td><td class="n">65</td><td class="n">32</td><td class="n">32</td></tr>
-            <tr><td><code>Kem.P384</code></td><td>DHKEM(P-384, HKDF-SHA384)</td><td class="n">0x0011</td><td class="n">97</td><td class="n">48</td><td class="n">48</td></tr>
-            <tr><td><code>Kem.P521</code></td><td>DHKEM(P-521, HKDF-SHA512)</td><td class="n">0x0012</td><td class="n">133</td><td class="n">66</td><td class="n">64</td></tr>
-            <tr><td><code>Kem.X25519</code></td><td>DHKEM(X25519, HKDF-SHA256)</td><td class="n">0x0020</td><td class="n">32</td><td class="n">32</td><td class="n">32</td></tr>
-            <tr><td><code>Kem.X448</code></td><td>DHKEM(X448, HKDF-SHA512)</td><td class="n">0x0021</td><td class="n">56</td><td class="n">56</td><td class="n">64</td></tr>
+            <tr><td><code>Kem.P256</code></td><td>DHKEM(P-256, HKDF-SHA256)</td><td class="n">0x0010</td><td class="n">65</td><td class="n">65</td><td class="n">32</td><td class="n">32</td><td>yes</td></tr>
+            <tr><td><code>Kem.P384</code></td><td>DHKEM(P-384, HKDF-SHA384)</td><td class="n">0x0011</td><td class="n">97</td><td class="n">97</td><td class="n">48</td><td class="n">48</td><td>yes</td></tr>
+            <tr><td><code>Kem.P521</code></td><td>DHKEM(P-521, HKDF-SHA512)</td><td class="n">0x0012</td><td class="n">133</td><td class="n">133</td><td class="n">66</td><td class="n">64</td><td>yes</td></tr>
+            <tr><td><code>Kem.X25519</code></td><td>DHKEM(X25519, HKDF-SHA256)</td><td class="n">0x0020</td><td class="n">32</td><td class="n">32</td><td class="n">32</td><td class="n">32</td><td>yes</td></tr>
+            <tr><td><code>Kem.X448</code></td><td>DHKEM(X448, HKDF-SHA512)</td><td class="n">0x0021</td><td class="n">56</td><td class="n">56</td><td class="n">56</td><td class="n">64</td><td>yes</td></tr>
+            <tr><td><code>Kem.Mlkem512</code></td><td>ML-KEM-512</td><td class="n">0x0040</td><td class="n">800</td><td class="n">768</td><td class="n">64</td><td class="n">32</td><td>no</td></tr>
+            <tr><td><code>Kem.Mlkem768</code></td><td>ML-KEM-768</td><td class="n">0x0041</td><td class="n">1,184</td><td class="n">1,088</td><td class="n">64</td><td class="n">32</td><td>no</td></tr>
+            <tr><td><code>Kem.Mlkem1024</code></td><td>ML-KEM-1024</td><td class="n">0x0042</td><td class="n">1,568</td><td class="n">1,568</td><td class="n">64</td><td class="n">32</td><td>no</td></tr>
           </tbody>
         </table>
       </div>
 
       <p class="fine">
-        Sizes are bytes. An encapsulated key has the same size as a public key,
-        because it is one. <code>Kem.public_key_size</code>,
-        <code>Kem.private_key_size</code>, and
-        <code>Kem.encapsulated_key_size</code> report these at run time.
+        Sizes are bytes. A Diffie-Hellman KEM encapsulates to an ephemeral
+        public key, so its encapsulated key has the size of a public key;
+        ML-KEM encapsulates to a ciphertext, which has a size of its own.
+        <code>Kem.public_key_size</code>, <code>Kem.private_key_size</code>,
+        <code>Kem.encapsulated_key_size</code>, and
+        <code>Kem.supports_auth</code> report these at run time.
       </p>
+
+      <h3 id="ml-kem">ML-KEM</h3>
+
+      <p>
+        <code>Kem.Mlkem512</code>, <code>Kem.Mlkem768</code>, and
+        <code>Kem.Mlkem1024</code> are the post-quantum KEMs of
+        <a href="https://csrc.nist.gov/pubs/fips/203/final">FIPS 203</a>, as
+        <a href="https://datatracker.ietf.org/doc/draft-ietf-hpke-pq/"><code>draft-ietf-hpke-pq</code></a>
+        defines them for HPKE, provided by the pure OCaml
+        <a href="https://github.com/thevilledev/ocaml-pq"><code>mlkem</code></a>.
+        With an HKDF they run the RFC 9180 key schedule unchanged, in the Base
+        and PSK modes. What differs from a Diffie-Hellman KEM:
+      </p>
+
+      <ul>
+        <li>
+          <strong>No Auth or AuthPSK mode.</strong> ML-KEM has no authenticated
+          encapsulation, so the <code>auth</code> functions return
+          <code>Unsupported_mode</code>. The PSK mode, or a signature over the
+          encapsulated key and ciphertext, authenticates the sender instead.
+        </li>
+        <li>
+          <strong>A private key is a seed.</strong> It is the 64 bytes
+          <code>d || z</code> that FIPS 203 generates a key pair from, not the
+          expanded decapsulation key. Every 64-byte string is one.
+        </li>
+        <li>
+          <strong>Decapsulation does not fail.</strong> An encapsulated key of
+          the right length that was tampered with, or made for another key,
+          yields a secret unrelated to the sender's and no error (implicit
+          rejection). The receiver is set up, and the failure surfaces as
+          <code>Open_error</code> at its first open.
+        </li>
+        <li>
+          <strong>The specification is a draft.</strong> Encodings are those of
+          FIPS 203 and are not expected to move, but
+          <code>derive_key_pair</code> follows revision 05 of the draft and
+          changes if the draft does. The draft prefers ML-KEM-768 and
+          ML-KEM-1024 to ML-KEM-512, as a hedge against cryptanalysis that
+          weakens ML-KEM without breaking it.
+        </li>
+      </ul>
 
       <h2 id="kdf">KDF</h2>
 
@@ -155,8 +204,8 @@ let exporter =
         <tbody>
           <tr><td>Base</td><td class="n">0x00</td><td>Implemented.</td></tr>
           <tr><td>PSK</td><td class="n">0x01</td><td>Implemented. Secrets of at least 32 bytes, non-empty identifier.</td></tr>
-          <tr><td>Auth</td><td class="n">0x02</td><td>Implemented. The sender seals with its static private key; the recipient opens with that key's public half.</td></tr>
-          <tr><td>AuthPSK</td><td class="n">0x03</td><td>Implemented. Auth and PSK together.</td></tr>
+          <tr><td>Auth</td><td class="n">0x02</td><td>Implemented for the Diffie-Hellman KEMs. The sender seals with its static private key; the recipient opens with that key's public half.</td></tr>
+          <tr><td>AuthPSK</td><td class="n">0x03</td><td>Implemented for the Diffie-Hellman KEMs. Auth and PSK together.</td></tr>
         </tbody>
       </table>
 
@@ -174,6 +223,18 @@ let exporter =
           uncompressed SEC1 form, which is what RFC 9180 specifies.
         </li>
         <li>
+          <strong>Hybrid KEMs and SHA-3 KDFs.</strong>
+          <code>draft-ietf-hpke-pq</code> also combines ML-KEM with X25519,
+          P-256, and P-384, and defines SHAKE and TurboSHAKE KDFs. The hybrids
+          rest on CFRG drafts that are still moving, and the KDFs on the
+          one-stage key schedule of the successor standard, which belongs in
+          its <a href="#versioning">own module</a>.
+        </li>
+        <li>
+          <strong>Expanded ML-KEM private keys.</strong> Only the 64-byte seed
+          is accepted, the one format <code>draft-ietf-hpke-pq</code> defines.
+        </li>
+        <li>
           <strong>Secret printers and equality helpers.</strong> Private keys
           and PSKs have no <code>pp</code> and no comparison function, so they
           cannot casually reach a log line or a timing-variable comparison.
@@ -185,12 +246,12 @@ let exporter =
       <table>
         <caption>What is checked, and where</caption>
         <tbody>
-          <tr><th scope="row">Public keys</th><td>Exact encoded length. NIST keys must start with the uncompressed SEC1 marker and lie on the curve. X25519 and X448 low-order values are rejected when the key is used.</td></tr>
-          <tr><th scope="row">Private keys</th><td>Exact encoded length. NIST scalars must be non-zero and below the curve order, compared in constant time. X25519 and X448 scalars are clamped on parse and on output.</td></tr>
-          <tr><th scope="row">Encapsulated keys</th><td>Parsed as a public key for the suite's KEM. Context-level setup reports the failure structurally; single-shot opens normalize it.</td></tr>
-          <tr><th scope="row">Suite agreement</th><td>A recipient or sender key whose KEM differs from the suite's KEM yields <code>Key_mismatch</code> before any cryptography.</td></tr>
+          <tr><th scope="row">Public keys</th><td>Exact encoded length. NIST keys must start with the uncompressed SEC1 marker and lie on the curve. X25519 and X448 low-order values are rejected when the key is used. ML-KEM keys must pass the modulus check of FIPS 203: every coefficient reduced.</td></tr>
+          <tr><th scope="row">Private keys</th><td>Exact encoded length. NIST scalars must be non-zero and below the curve order, compared in constant time. X25519 and X448 scalars are clamped on parse and on output. Every ML-KEM seed of the right length is valid.</td></tr>
+          <tr><th scope="row">Encapsulated keys</th><td>For a Diffie-Hellman KEM, parsed as a public key. For ML-KEM, exact length only: <a href="#ml-kem">decapsulation does not fail</a>. Context-level setup reports a failure structurally; single-shot opens normalize it.</td></tr>
+          <tr><th scope="row">Suite agreement</th><td>A recipient or sender key whose KEM differs from the suite's KEM yields <code>Key_mismatch</code> before any cryptography, and an Auth or AuthPSK call on an ML-KEM suite yields <code>Unsupported_mode</code> before that.</td></tr>
           <tr><th scope="row">PSKs</th><td>Secret of at least 32 bytes and a non-empty identifier. A length check cannot establish entropy.</td></tr>
-          <tr><th scope="row">Derivation</th><td><code>derive_key_pair</code> follows RFC 9180, including rejection sampling for the NIST curves; exhausting it yields <code>Derive_key_pair_failure</code>.</td></tr>
+          <tr><th scope="row">Derivation</th><td><code>derive_key_pair</code> follows RFC 9180, including rejection sampling for the NIST curves; exhausting it yields <code>Derive_key_pair_failure</code>. For ML-KEM it follows <code>draft-ietf-hpke-pq</code> and derives the seed with SHAKE256.</td></tr>
         </tbody>
       </table>
 

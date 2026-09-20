@@ -7,6 +7,7 @@
   mirage-crypto-ec
   mirage-crypto-rng
   curve448
+  mlkem
   kdf.hkdf
   digestif
   eqaf))
