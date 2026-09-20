@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-09-20
+
+Adds X448, the RFC 9180 Auth and AuthPSK modes, and the post-quantum ML-KEM
+KEMs. Two changes can break an upgrade from 0.2.0: `Kem.id` and `Error.t` gain
+constructors, which exhaustive matches must handle, and `hpke` is no longer
+installable on 32-bit architectures.
 
 - Add `Kem.X448`, DHKEM(X448, HKDF-SHA512), identifier `0x0021`, with 56-byte
   keys and a 64-byte shared secret. Key derivation and clamping follow the

@@ -39,8 +39,8 @@ Usage, ciphersuites, the security model, and development notes:
 | HPKE-bis or another successor standard | Deferred to a new versioned module |
 | Application wire framing | Deferred to applications |
 
-The deferred features are intentionally outside the first OPAM release. They
-do not change the wire behavior of `Hpke.Rfc9180`.
+The deferred features are intentionally out of scope for now. They do not
+change the wire behavior of `Hpke.Rfc9180`.
 
 ## X448 backends
 
