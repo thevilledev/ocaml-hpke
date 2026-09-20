@@ -192,6 +192,12 @@ th.n {
   font-variant-numeric: tabular-nums;
 }
 
+/* A table of many columns gives up some padding to stay inside the page. */
+table.dense th,
+table.dense td {
+  padding: 0.22em 0.4em;
+}
+
 .table-scroll {
   overflow-x: auto;
 }

@@ -6,7 +6,12 @@
     including those of protocols layered on HPKE such as RFC 9458. Reusing or
     disclosing an ephemeral key breaks the confidentiality of every message
     sealed under it, so this library must not be used by production protocols.
-    Use {!Hpke.Rfc9180} instead. *)
+    Use {!Hpke.Rfc9180} instead.
+
+    ML-KEM encapsulates from randomness and has no ephemeral key, so with an
+    ML-KEM suite these functions return {!Hpke.Error.Invalid_private_key}. To
+    reproduce a vector that fixes that randomness, pass a generator that returns
+    it as [~rng] to the ordinary {!Hpke.Rfc9180} setup function. *)
 
 val setup_base_sender :
   'capability Hpke.Suite.t ->

@@ -38,6 +38,20 @@ disclosure after a fix is available.
   and memory access, which has been checked with tools and not proven. Read its
   [security policy](https://github.com/thevilledev/ocaml-curve448/blob/main/SECURITY.md)
   for the limits before choosing X448.
+- `Kem.Mlkem512`, `Kem.Mlkem768`, and `Kem.Mlkem1024` are provided by `mlkem`,
+  which has not been independently audited and does not guarantee constant-time
+  execution. Read its
+  [security policy](https://github.com/thevilledev/ocaml-pq/blob/main/SECURITY.md)
+  before choosing ML-KEM. They follow `draft-ietf-hpke-pq`, which is not yet an
+  RFC: keys derived with `derive_key_pair` would change if the draft's
+  derivation did, so store the private key and not only its input. They are
+  pure ML-KEM and not a hybrid with a Diffie-Hellman KEM, so nothing else
+  protects a message if ML-KEM or its implementation fails. Prefer ML-KEM-768
+  or ML-KEM-1024 to ML-KEM-512, as the draft does.
+- A forged ML-KEM encapsulated key of the right length does not fail to
+  decapsulate; it yields a secret unrelated to the sender's. A receiver that
+  opens messages sees `Open_error`. An export-only receiver sees no error at
+  all, and must confirm an exported secret with its peer before relying on it.
 - A sender or receiver context is stateful. Serialize access at the application
   layer. `Concurrent_use` means no cryptography was performed by that call.
 - Treat `Open_error` uniformly at protocol boundaries. Do not build an oracle

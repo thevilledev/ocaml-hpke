@@ -7,9 +7,14 @@
  (name test_vectors)
  (modules test_vectors)
  (libraries hpke hpke.for_testing alcotest mirage-crypto-rng yojson)
- (deps ../test-vectors/rfc9180-supported.json)
+ (deps
+  ../test-vectors/rfc9180-supported.json
+  ../test-vectors/hpke-pq-supported.json)
  (action
   (setenv
    HPKE_TEST_VECTORS
    %{dep:../test-vectors/rfc9180-supported.json}
-   (run %{test}))))
+   (setenv
+    HPKE_PQ_TEST_VECTORS
+    %{dep:../test-vectors/hpke-pq-supported.json}
+    (run %{test})))))

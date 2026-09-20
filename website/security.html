@@ -75,14 +75,27 @@
       </p>
 
       <p>
-        <code>Key_mismatch</code> is the deliberate exception: a key whose KEM
-        differs from the suite's is a local configuration mistake, not something
-        a peer can provoke, so it stays distinguishable and debuggable. The
+        <code>Key_mismatch</code> and <code>Unsupported_mode</code> are the
+        deliberate exceptions: a key whose KEM differs from the suite's, or an
+        authenticated mode asked of an ML-KEM suite, is a local configuration
+        mistake, not something a peer can provoke, so it stays distinguishable
+        and debuggable. The
         context-level <code>setup_base_receiver</code> likewise reports
         malformed encapsulations structurally, and
         <code>setup_auth_receiver</code> a sender key that fails validation,
         because at that level the caller is assumed to be diagnosing its own
         inputs.
+      </p>
+
+      <p>
+        ML-KEM normalizes one step earlier, inside the KEM. An encapsulated key
+        of the right length never fails to decapsulate: one that was tampered
+        with, or made for another key, yields a secret unrelated to the
+        sender's (implicit rejection, FIPS 203). Even the context-level setup
+        then reports nothing, and the failure surfaces as
+        <code>Open_error</code> at the first open. An export-only receiver
+        never opens anything, so it sees no error at all: it must confirm an
+        exported secret with its peer before relying on it.
       </p>
 
       <h2 id="limits">What it does not defend against</h2>
@@ -93,7 +106,8 @@
         <li><strong>Message loss and reordering.</strong> HPKE contexts do not recover from either. A stream that skips a message cannot be resynchronized; prefer the single-shot API at protocol boundaries.</li>
         <li><strong>PSK entropy.</strong> <code>Psk.create</code> enforces a 32-byte minimum. No length check can establish that a secret is unpredictable.</li>
         <li><strong>Key-compromise impersonation.</strong> The Auth and AuthPSK modes authenticate the sender, but not as a signature does. Whoever holds the recipient's private key, and in AuthPSK mode the PSK as well, can seal a message that opens as coming from any sender (RFC 9180, Section 9.1.1), so a recipient also cannot prove to a third party who sent a message. Where either matters, sign the encapsulated key and ciphertext as well.</li>
-        <li><strong>Primitive side channels.</strong> The timing behavior of the curve, hash, and AEAD implementations is Mirage Crypto's and Digestif's responsibility, not this library's.</li>
+        <li><strong>Primitive side channels.</strong> The timing behavior of the curve, hash, and AEAD implementations is Mirage Crypto's and Digestif's responsibility, not this library's. ML-KEM, and the SHAKE256 that derives its key pairs, are <a href="https://github.com/thevilledev/ocaml-pq/blob/main/SECURITY.md"><code>mlkem</code>'s</a>, which avoids secret-dependent branches in its source and does not claim that the compiled code runs in constant time.</li>
+        <li><strong>A break of ML-KEM.</strong> The ML-KEM suites are pure ML-KEM, not a hybrid with a Diffie-Hellman KEM. They protect a message against an attacker who records it now and gets a quantum computer later, which the Diffie-Hellman suites do not. But ML-KEM and its implementations are young, and if either fails, nothing else protects the message. The hybrid KEMs of <code>draft-ietf-hpke-pq</code>, which hold as long as one of their halves does, are not implemented.</li>
         <li><strong>Key management.</strong> Storage, distribution, rotation, and revocation are out of scope. So is transport framing.</li>
       </ul>
 
@@ -119,16 +133,24 @@
               <td>Appendix C.8 export-only, and Appendix D vectors for P-256 rejection sampling, empty inputs, embedded zero bytes, and empty <code>info</code>.</td>
             </tr>
             <tr>
+              <td><a href="https://datatracker.ietf.org/doc/draft-ietf-hpke-pq/"><code>draft-ietf-hpke-pq-05</code></a>, pinned at HPKE working-group commit <code>6433c8f</code></td>
+              <td>Every ML-KEM vector that uses an HKDF: ML-KEM-512 and ML-KEM-768 with HKDF-SHA256 and AES-128-GCM, and ML-KEM-1024 with HKDF-SHA384 and AES-256-GCM, in Base mode. Each checks key derivation, the encapsulation from fixed randomness, ten ciphertexts, and five exports. The remaining ML-KEM vector uses a KDF outside this library and is replayed as far as the KEM goes: key derivation and encapsulation.</td>
+            </tr>
+            <tr>
+              <td>OpenSSL SHAKE256</td>
+              <td>Known answers for ML-KEM key derivation from an empty and a multi-block input, which the draft's vectors do not cover.</td>
+            </tr>
+            <tr>
               <td>Go 1.26.5 standard-library <code>crypto/hpke</code></td>
               <td>An independently generated P-384/HKDF-SHA384/AES-256-GCM fixture. The generator is kept at <code>tools/differential/go/main.go</code>; its outputs are pinned in the OCaml test.</td>
             </tr>
             <tr>
               <td>Suite coverage</td>
-              <td>All 45 Base combinations round-tripped, PSK, Auth, and AuthPSK across every KEM, and sender/receiver agreement on export-only suites.</td>
+              <td>All 72 Base combinations round-tripped, PSK across every KEM, Auth and AuthPSK across every Diffie-Hellman KEM, and sender/receiver agreement on export-only suites.</td>
             </tr>
             <tr>
               <td>Invariants</td>
-              <td>A failed open retains sequence state; malformed encodings, off-curve points, invalid scalars, low-order X25519 and X448 values, and tampering are rejected; X25519 and X448 private keys are clamped as RFC 7748 specifies; single-shot errors are normalized; suite and key mismatches are reported; a message opens only in the mode it was sealed in, and only from its own sender.</td>
+              <td>A failed open retains sequence state; malformed encodings, off-curve points, invalid scalars, low-order X25519 and X448 values, and tampering are rejected; X25519 and X448 private keys are clamped as RFC 7748 specifies; single-shot errors are normalized; suite and key mismatches are reported; a message opens only in the mode it was sealed in, and only from its own sender. For ML-KEM: keys with unreduced coefficients are rejected; generated keys take the generator's output as their seed; a tampered encapsulation decapsulates to another secret and fails to open; and an authenticated mode is refused before any randomness is drawn.</td>
             </tr>
             <tr>
               <td>Property tests (QCheck)</td>
@@ -136,7 +158,7 @@
             </tr>
             <tr>
               <td>Fuzzing (Crowbar)</td>
-              <td>Key parsing across all five KEMs, receiver setup in all four modes on arbitrary encapsulations, arbitrary Auth-mode sender keys, and opening arbitrary ciphertexts. CI fuzzes briefly on every pull request and push to <code>main</code>, and for longer each week.</td>
+              <td>Key parsing across every KEM, receiver setup in all four modes on arbitrary encapsulations, encapsulations fitted to size so that they reach the key exchange or ML-KEM decapsulation, arbitrary Auth-mode sender keys, and opening arbitrary ciphertexts. CI fuzzes briefly on every pull request and push to <code>main</code>, and for longer each week.</td>
             </tr>
             <tr>
               <td>Concurrency</td>
@@ -160,6 +182,7 @@
         <li>Treat <code>Open_error</code> uniformly at protocol boundaries. Do not build an oracle by translating lower-level setup errors into distinguishable responses.</li>
         <li>Do not log private-key or PSK byte strings. The public API intentionally offers no secret printers or equality helpers.</li>
         <li>Assume secrets may persist in memory after use, and design retention accordingly.</li>
+        <li>The ML-KEM KEMs follow <code>draft-ietf-hpke-pq</code>, which is not yet an RFC, and come from <code>mlkem</code>, which is unaudited and does not guarantee constant-time execution. Prefer ML-KEM-768 or ML-KEM-1024 to ML-KEM-512, as the draft does. Keys derived with <code>derive_key_pair</code> would change if the draft's derivation did, so store the private key it returns, not only the input it was derived from.</li>
       </ul>
 
       <h2 id="reporting">Reporting a vulnerability</h2>

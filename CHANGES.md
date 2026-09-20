@@ -28,6 +28,33 @@
   same CFRG commit: the 16 X448 Base and PSK vectors, and the 64 Auth and
   AuthPSK vectors over P-256, P-521, X25519, and X448. The 48 existing cases
   are unchanged.
+- Add `Kem.Mlkem512`, `Kem.Mlkem768`, and `Kem.Mlkem1024`, the post-quantum
+  ML-KEM KEMs of FIPS 203 with identifiers `0x0040` to `0x0042`, as
+  `draft-ietf-hpke-pq-05` specifies them. They work in the Base and PSK modes,
+  where a suite with an HKDF runs the RFC 9180 key schedule unchanged. A
+  private key is the 64-byte seed `d || z`, and `generate_key_pair` takes it
+  from the generator as `ML-KEM.KeyGen` does. A public key must pass the
+  modulus check of FIPS 203. Keys are parsed once and kept: parsing a private
+  key runs key generation, and parsing a public key expands its matrix. An
+  encapsulated key is an ML-KEM ciphertext, so `Kem.encapsulated_key_size` is
+  no longer `Kem.public_key_size` for every KEM. One of the right length never
+  fails to decapsulate: a forged one yields an unrelated secret (implicit
+  rejection), and the failure surfaces as `Open_error` at the first open. The
+  draft is not yet an RFC, and `derive_key_pair` for these KEMs follows it.
+- Add `Kem.supports_auth` and `Error.Unsupported_mode`. ML-KEM has no
+  authenticated encapsulation, so on an ML-KEM suite the Auth and AuthPSK
+  functions return `Unsupported_mode` before they look at a key or draw
+  randomness, and the single-shot opens leave it distinguishable, as they do
+  `Key_mismatch`. The new constructor breaks exhaustive matches on `Error.t`.
+- Depend on [`mlkem`](https://github.com/thevilledev/ocaml-pq) for the ML-KEM
+  primitive, and for the SHAKE256 that deriving an ML-KEM key pair takes:
+  `mlkem` exports the one ML-KEM itself runs on as `Mlkem.Fips202`, so the
+  library still implements no primitive of its own.
+- `hpke.for_testing` refuses an ML-KEM suite, which has no ephemeral key to
+  choose. A generator that returns the fixed encapsulation randomness, passed
+  as `~rng` to the ordinary setup functions, reproduces such vectors.
+- Pin the `draft-ietf-hpke-pq-05` corpus: its three ML-KEM vectors that use an
+  HKDF, replayed in full, and the fourth as far as the KEM goes.
 - Parse private keys through one exhaustive match on the KEM. The previous
   wildcard would have let a new KEM skip clamping without a compiler warning.
 - Check X25519 and X448 private-key clamping against literal bytes. The vector
