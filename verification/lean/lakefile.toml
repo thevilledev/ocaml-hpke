@@ -1,0 +1,8 @@
+name = "hpke-spec"
+defaultTargets = ["HpkeSpec"]
+
+[leanOptions]
+autoImplicit = false
+
+[[lean_lib]]
+name = "HpkeSpec"
