@@ -62,6 +62,12 @@ installable on 32-bit architectures.
   HKDF, replayed in full, and the fourth as far as the KEM goes.
 - Parse private keys through one exhaustive match on the KEM. The previous
   wildcard would have let a new KEM skip clamping without a compiler warning.
+- Release a context when an exception from a signal handler interrupts
+  `Sender.seal` or `Receiver.open_` while it marks the context busy. Since
+  0.1.0, `Fun.protect` allocated before installing its handler, and on an
+  exception again before releasing the context, and an exception raised at
+  either allocation left the context marked busy for good, so that every later
+  call returned `Concurrent_use`.
 - Check X25519 and X448 private-key clamping against literal bytes. The vector
   corpus cannot: it compares serializations that have both passed through the
   library's own clamp, and the primitives clamp again when they use a scalar.
