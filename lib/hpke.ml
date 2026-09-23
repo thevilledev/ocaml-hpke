@@ -920,13 +920,23 @@ module Rfc9180 = struct
     done;
     !exhausted
 
+  (* A signal handler may raise at any poll point, and a recursive function
+     polls on every call. Storing the bytes from the last one, as a carry
+     propagates, an exception could stop the increment after a byte had become
+     zero and before the next one was incremented, leaving a number already
+     used. The byte that takes the carry is therefore stored first and the 0xff
+     bytes after it cleared last. However the increment is interrupted, the
+     sequence then holds its old number, whose ciphertext is not returned, or
+     one above the new number: numbers can be skipped but never reused. *)
   let increment_sequence sequence =
-    let rec increment index =
-      let value = Bytes.get_uint8 sequence index in
-      Bytes.set_uint8 sequence index ((value + 1) land 0xff);
-      if value = 0xff && index > 0 then increment (index - 1)
+    let rec carry index =
+      if index = 0 || Bytes.get_uint8 sequence index < 0xff then index
+      else carry (index - 1)
     in
-    increment (Bytes.length sequence - 1)
+    let index = carry (Bytes.length sequence - 1) in
+    Bytes.set_uint8 sequence index
+      ((Bytes.get_uint8 sequence index + 1) land 0xff);
+    Bytes.fill sequence (index + 1) (Bytes.length sequence - index - 1) '\000'
 
   let nonce state =
     String.init (String.length state.base_nonce) (fun index ->
