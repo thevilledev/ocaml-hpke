@@ -1614,6 +1614,15 @@ let mlkem_has_no_auth_modes () =
         (name ^ " ephemeral key, Auth mode")
         (Hpke_for_testing.setup_auth_sender suite ~ephemeral:own_sender
            ~recipient:public ~sender:own_sender ~info);
+      expect_unsupported_mode
+        (name ^ " ephemeral key, AuthPSK mode")
+        (Hpke_for_testing.setup_auth_psk_sender suite ~ephemeral:own_sender
+           ~recipient:public ~sender:own_sender ~psk ~info);
+      (* The mode is refused before the keys are compared. *)
+      expect_unsupported_mode
+        (name ^ " X25519 ephemeral and sender keys, Auth mode")
+        (Hpke_for_testing.setup_auth_sender suite ~ephemeral:x25519_sender
+           ~recipient:public ~sender:x25519_sender ~info);
       expect_key_mismatch
         (name ^ " X25519 ephemeral key")
         (Hpke_for_testing.setup_base_sender suite ~ephemeral:x25519_sender
