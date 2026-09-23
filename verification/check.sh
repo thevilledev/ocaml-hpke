@@ -3,13 +3,11 @@
 # conformance vectors are those the Lean mirrors generate, and the TLA+ models.
 # The vectors themselves are replayed against lib/hpke.ml by `dune runtest`.
 #
-# Needs elan (Lean 4.34.0), a JDK, and tla2tools.jar. Override the defaults
-# with JAVA and TLA2TOOLS.
+# Needs elan (Lean 4.34.0), a JDK, and tla2tools.jar. tla/check.sh reads JAVA
+# and TLA2TOOLS to override its defaults.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-java=${JAVA:-java}
-tla2tools=${TLA2TOOLS:-$HOME/.local/share/tlaplus/tla2tools.jar}
 metadir=$(mktemp -d)
 trap 'rm -rf "$metadir"' EXIT
 
@@ -30,4 +28,4 @@ cmp "$metadir/vectors.txt" "$here/conformance/vectors.txt" || {
 }
 
 echo "== TLA+"
-JAVA="$java" TLA2TOOLS="$tla2tools" TLC_METADIR="$metadir" "$here/tla/check.sh"
+TLC_METADIR="$metadir" "$here/tla/check.sh"

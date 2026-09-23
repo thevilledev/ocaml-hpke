@@ -1,7 +1,8 @@
 #!/bin/sh
 # Model-check every configuration in this directory with TLC and compare the
 # outcome with the expected one. Deadlock checking stays on for every run.
-# The whole suite takes about ten minutes, six of them for HpkeContext_3dom.
+# The whole suite takes about a quarter of an hour, six minutes of it for
+# HpkeContext_3dom.
 #
 #   JAVA=...  TLA2TOOLS=...  ./check.sh            # all runs
 #   ./check.sh HpkeContext_3dom                    # selected runs
@@ -23,11 +24,19 @@ HpkeContext                            HpkeContext    pass
 HpkeContext_3dom                       HpkeContext    pass
 HpkeContext_wide                       HpkeContext    pass
 HpkeContext_async_cas                  HpkeContext    pass
+HpkeContext_fixed                      HpkeContext    pass
+HpkeContext_fixed_async                HpkeContext    pass
+HpkeContext_fixed_async_wide           HpkeContext    pass
+HpkeContext_fix_seq_async_incr         HpkeContext    pass
+HpkeContext_fix_busy_async             HpkeContext    pass
 HpkeChannel                            HpkeChannel    pass
 HpkeContext_rfc_order                  HpkeContext    Refinement
 HpkeContext_async_cas_stuck            HpkeContext    BusyReleased
 HpkeContext_async_incr                 HpkeContext    NoNonceReuse
 HpkeContext_async_incr_open            HpkeContext    NoNonceReuse
+HpkeContext_async_incr_relaxed         HpkeContext    RelaxedRefinement
+HpkeContext_async_release_stuck        HpkeContext    BusyReleased
+HpkeContext_fixed_async_skips          HpkeContext    SeqCountsSuccesses
 HpkeContext_mut_no_cas                 HpkeContext    NoNonceReuse
 HpkeContext_mut_incr_before_aead       HpkeContext    Refinement
 HpkeContext_mut_check_after_incr       HpkeContext    NeverUsesAllOnesNonce
@@ -65,6 +74,14 @@ while read -r cfg module expected; do
     got=$(grep -m1 -E 'Invariant .* is violated|Action property .* is violated' "$log" |
           sed -E 's/.*Invariant ([A-Za-z]+) is violated.*/\1/;
                   s/.*Action property .* of module Rfc9180Context is violated.*/Refinement/')
+    # An action property defined in the checked module: name the definition
+    # that contains the line TLC reports.
+    case "$got" in
+      *"Action property line "*)
+        line=$(echo "$got" | sed -E 's/.*Action property line ([0-9]+),.*/\1/')
+        got=$(awk -v l="$line" 'NR <= l && /^[A-Za-z][A-Za-z0-9_]* *==/ { n = $1 }
+                                NR == l { print n; exit }' "$module.tla") ;;
+    esac
   fi
   # TLC does not name a violated temporal property; the configs that
   # expect one check exactly one.

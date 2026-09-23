@@ -51,7 +51,8 @@ The spec checks these properties:
 
 ## HpkeContext.tla
 
-This spec gives every step its own `pc` label.
+This spec gives every step its own `pc` label. The table describes the shipped
+code. The next section covers the fixed code, which two constants select.
 
 | `pc` | OCaml code (`lib/hpke.ml`) |
 | --- | --- |
@@ -64,6 +65,35 @@ This spec gives every step its own `pc` label.
 | `incr` | `increment_sequence` (923-929). Each step is one call of the recursive `increment`, which handles one byte, so a carry takes several steps. |
 | `finally`, `finally_exn` | `Fun.protect ~finally:(fun () -> Atomic.set state.busy false)`. This runs on a normal return and on an exception, which it then re-raises. |
 | `export` | `export` (904-914). It touches neither `busy` nor the sequence. |
+
+### Shipped code and fixed code
+
+Two constants choose between the shipped code and the fixes for F1 and F2:
+
+| Constant | Shipped | Fix | What the fix changes in the model |
+| --- | --- | --- | --- |
+| `IncrementOrder` | `"lsb_first"` | `"carry_first"` (branch `fix/sequence-async-exception`) | `incr` becomes one read-only scan: `carry` finds the digit that absorbs the carry. Next comes `incr_store`, the single store that increments that digit. Then `incr_fill` clears the trailing digits, which `Bytes.fill` does. |
+| `BusyRelease` | `"fun_protect"` | `"direct"` (branch `fix/busy-async-exception`) | There is no `gap`: a successful CAS leads straight to `limit`. `finally` and `finally_exn` release `busy` before anything allocates. |
+
+Every configuration that existed before the fixes sets `IncrementOrder =
+"lsb_first"`, `BusyRelease = "fun_protect"` and `AsyncExnBeforeRelease = FALSE`.
+Their runs are therefore unchanged, with the same states and the same results.
+
+With the carry-first increment, an asynchronous exception can arrive at these
+points in the model:
+
+* during the scan, where `carry` polls on each call, or at the closure
+  allocation before it;
+* between the scan and the store;
+* between the store and the fill;
+* between two trailing digits.
+
+The real code has no poll point after the scan. On OCaml 5.4.1 arm64, `-dlinear`
+and the disassembly of `Bytes.fill` show none, and `Bytes.fill` clears all the
+digits in one `noalloc` C call. The last three points are therefore
+conservative. An interruption before the store leaves the sequence unchanged.
+An interruption after it leaves the sequence at or above the new value. The
+sequence may skip ahead, which burns nonces, but it never goes back.
 
 The sequence is modelled as `SeqWidth` digits in base `SeqBase`, most
 significant first, just as `state.sequence` is 12 big-endian bytes in base 256.
@@ -92,7 +122,9 @@ model guarantees sequential consistency for data-race-free programs.
 | `SeqCountsSuccesses` | invariant | Outside an increment, the sequence equals the number of successful calls, so it never wraps or skips. |
 | `NeverUsesAllOnesNonce` | invariant | No success uses nonce `MaxSeq`, and the AEAD is never invoked with it. |
 | `LimitErrorOnlyAtLimit` | invariant | `Message_limit_reached` is returned only when the sequence is exhausted. |
+| `UsedNoncesBelowSeq` | invariant | Every nonce already used is below the abstract `seq`, so the sequence can never come back to one. |
 | `Refinement` | property | `Spec => Abs!Spec`, where `Abs` is the refinement mapping below. |
+| `RelaxedRefinement` | property | Refinement of the abstract context extended with `BurnNonces`: a call interrupted by an asynchronous exception fails and may move `seq` ahead by any amount, but never back. |
 | `SeqNeverDecreases` | property | The abstract sequence number never goes down. |
 | `CallsReturn` | liveness | Under weak fairness, `pc[d] # "idle" ~> pc[d] = "idle"`. |
 | `BusyReleased` | liveness | `busy ~> ~busy` |
@@ -129,8 +161,17 @@ All of these default to off.
 * `AsyncExnAtCas` lets an asynchronous exception (`Sys.Break` from a signal
   handler, `Out_of_memory`, a raising `Gc.Memprof` or `Gc.finalise` callback)
   arrive in `gap`.
-* `AsyncExnInIncrement` lets one arrive at the poll point in the prologue of
-  `increment`.
+* `AsyncExnInIncrement` lets one arrive inside `increment_sequence`. For
+  `"lsb_first"`, that is the poll point in the prologue of `increment`. For
+  `"carry_first"`, it is any of the points listed above.
+* `AsyncExnBeforeRelease` lets an exception be raised on the exception path of
+  the shipped `Fun.protect`, before `~finally` runs. At that point
+  `Printexc.get_raw_backtrace` allocates the backtrace. That allocation is a C
+  call. OCaml 5 does not run signal handlers or other asynchronous callbacks
+  inside allocations made from C, so only an `Out_of_memory` from the
+  allocation itself fits this window. Modelling any exception there is
+  conservative. The direct release frees `busy` before it fetches the
+  backtrace, so this flag has no effect on it.
 * `Mutation` switches in deliberately broken variants: `no_cas`,
   `incr_before_aead`, `check_after_incr`, `release_before_incr` and
   `no_fun_protect`. These only show that the properties can catch real bugs;
@@ -206,6 +247,10 @@ These numbers come from TLC 2.19 with `-workers auto` on an Apple Silicon
 laptop, while another TLC job was also running, so the times are only
 indicative. States are distinct states. In every configuration, `SeqBase = 2`.
 
+The rows for the fixed code (`HpkeContext_fix*`) come from a later run of the
+whole suite, made under heavier load. In that run the other configurations
+found the same numbers of states, and `HpkeContext_3dom` took 12 min.
+
 ### Runs expected to pass
 
 | Config | Setup | What is checked | States | Time |
@@ -215,6 +260,11 @@ indicative. States are distinct states. In every configuration, `SeqBase = 2`.
 | `HpkeContext_3dom.cfg` | 3 domains, `MaxSeq = 3`, all ops, `FairSpec` | The same checks as `HpkeContext.cfg` | 2,164,800 | 5 min 52 s |
 | `HpkeContext_wide.cfg` | 2 domains, 3 digits (`MaxSeq = 7`), all ops | All 8 invariants, `Refinement`, `SeqNeverDecreases` and `StuckIsPermanent` (no liveness) | 7,900,116 | 1 min 43 s |
 | `HpkeContext_async_cas.cfg` | The `HpkeContext.cfg` setup plus `AsyncExnAtCas` | Every invariant except `BusyIffOwner` and `NotStuck`, plus `Refinement`, `SeqNeverDecreases`, `CallsReturn`, `NeverBlocked` and `StuckIsPermanent` | 166,220 | 14 s |
+| `HpkeContext_fixed.cfg` | Both fixes, no asynchronous exceptions, otherwise as `HpkeContext.cfg` | Everything `HpkeContext.cfg` checks, plus `UsedNoncesBelowSeq` | 122,860 | 12 s |
+| `HpkeContext_fixed_async.cfg` | Both fixes, with `AsyncExnAtCas`, `AsyncExnInIncrement` and `AsyncExnBeforeRelease`, 2 domains, `FairSpec` | `MutualExclusion`, `BusyIffOwner`, `NotStuck`, `NoNonceReuse`, `UsedNoncesBelowSeq`, `NeverUsesAllOnesNonce`, `LimitErrorOnlyAtLimit`, `RelaxedRefinement`, `SeqNeverDecreases`, `CallsReturn`, `BusyReleased`, `NeverBlocked` and `StuckIsPermanent` | 141,340 | 15 s |
+| `HpkeContext_fixed_async_wide.cfg` | As `HpkeContext_fixed_async.cfg` with 3 digits (`MaxSeq = 7`), `Spec` | The same invariants, plus `RelaxedRefinement`, `SeqNeverDecreases` and `StuckIsPermanent` (no liveness) | 10,573,220 | 2 min 16 s |
+| `HpkeContext_fix_seq_async_incr.cfg` | F1 fix only, with `AsyncExnInIncrement` and `Spec` | The same invariants, plus `RelaxedRefinement` and `SeqNeverDecreases`. Compare `HpkeContext_async_incr.cfg`. | 180,540 | 3 s |
+| `HpkeContext_fix_busy_async.cfg` | F2 fix only, with `AsyncExnAtCas`, `AsyncExnBeforeRelease` and `FairSpec` | Everything `HpkeContext.cfg` checks, including the exact `Refinement`. Compare the two `*_stuck` runs. | 118,100 | 12 s |
 | `HpkeChannel.cfg` | `MaxSeq = 5`, 2 aads, 3 messages, `FairSpec` | 5 invariants, `FailedOpenKeepsSeq` and `EventuallyAccepted` | 54,121 | 9 s |
 
 ### Runs expected to fail: findings and observations
@@ -225,6 +275,9 @@ indicative. States are distinct states. In every configuration, `SeqBase = 2`.
 | `HpkeContext_async_cas_stuck.cfg` | `AsyncExnAtCas` | `BusyReleased` | Lasso of 10 states (F2) |
 | `HpkeContext_async_incr.cfg` | `AsyncExnInIncrement`, seal | `NoNonceReuse` | 28 states (F1) |
 | `HpkeContext_async_incr_open.cfg` | `AsyncExnInIncrement`, open | `NoNonceReuse` | 28 states (F1, replay) |
+| `HpkeContext_async_incr_relaxed.cfg` | `AsyncExnInIncrement`, seal | `RelaxedRefinement` | 19 states. The torn increment moves `seq` from 1 back to 0, which even the relaxed spec forbids (F1). |
+| `HpkeContext_async_release_stuck.cfg` | `AsyncExnBeforeRelease` | `BusyReleased` | Lasso of 15 states. The AEAD raises, and a second exception on `Fun.protect`'s exception path skips `~finally` (F2). |
+| `HpkeContext_fixed_async_skips.cfg` | Both fixes, all asynchronous exceptions, seal | `SeqCountsSuccesses` | 19 states. At seq 1 the store makes the digits `<<1, 1>>`, and the fill is interrupted. `seq` jumps to 3 and nonce 2 is burned. This is expected: nonces are skipped, never reused. |
 
 ### Mutation checks
 
@@ -315,15 +368,50 @@ repository, compiled natively with OCaml 5.4.1:
   ciphertext equal to an earlier one from the same context. The first was seal
   #8960, which matched seal #8705, 255 seals earlier.
 
-**Possible fix.** Never mutate the published sequence in place. Increment a
-private copy (`let next = Bytes.copy state.sequence in ...`), then publish it
-with a single store that has no poll point:
+**Fix: carry first** (branch `fix/sequence-async-exception`).
 
-* `state.sequence <- next` with a mutable field, which compiles to one
-  `caml_modify`; or
-* `Bytes.blit`, which is a `noalloc` C call.
+```ocaml
+let increment_sequence sequence =
+  let rec carry index =
+    if index = 0 || Bytes.get_uint8 sequence index < 0xff then index
+    else carry (index - 1)
+  in
+  let index = carry (Bytes.length sequence - 1) in
+  Bytes.set_uint8 sequence index ((Bytes.get_uint8 sequence index + 1) land 0xff);
+  Bytes.fill sequence (index + 1) (Bytes.length sequence - index - 1) '\000'
+```
 
-This was checked with `-dlinear` on scratch code.
+All the poll points come before the first write: the closure allocation and the
+prologue of each `carry` call. After the scan there is one store, then
+`Bytes.fill`, and neither has a poll point.
+
+The model (`IncrementOrder = "carry_first"`) still allows an exception after
+the store and between the cleared digits. Even then, an interrupted increment
+leaves the sequence at or above the new value. TLC shows:
+
+* `HpkeContext_fix_seq_async_incr.cfg` (the F1 fix alone) and
+  `HpkeContext_fixed_async.cfg` (both fixes) pass these under
+  `AsyncExnInIncrement`:
+  * `NoNonceReuse`
+  * `UsedNoncesBelowSeq`
+  * `SeqNeverDecreases`
+  * `RelaxedRefinement`
+
+  Under the same flag, the shipped increment fails `NoNonceReuse`
+  (`HpkeContext_async_incr.cfg`) and `RelaxedRefinement`
+  (`HpkeContext_async_incr_relaxed.cfg`). `HpkeContext_fixed_async_wide.cfg`
+  repeats the safety checks with carries that span two digits.
+* Without asynchronous exceptions, the fix changes nothing observable.
+  `HpkeContext_fixed.cfg` passes the exact `Refinement`, `SeqCountsSuccesses`
+  and the liveness properties.
+* In the model, an increment interrupted after its store burns nonces
+  (`HpkeContext_fixed_async_skips.cfg`). If the carry crossed m trailing
+  `0xff` bytes, the skip is 256^m - 1 nonces. Near the very end, the sequence
+  can land on all-ones, and the context then reports `Message_limit_reached`
+  early. Skipped nonces are never used.
+
+  The real code has no poll point after the store, so this cannot happen
+  there: an interrupted increment either never starts or completes.
 
 ### F2. An asynchronous exception between the CAS and `Fun.protect` leaves `busy` set forever
 
@@ -345,13 +433,42 @@ domain take `AsyncExn` in `gap`, and from then on every CAS fails, forever.
 operation, all 11,516 interrupted calls left `busy = true`. With the real
 library, 4,355 contexts became permanently unusable in the 20 s run above.
 
-**Possible fix.** Right after the CAS, use
-`match operation () with r -> Atomic.set state.busy false; r | exception e -> Atomic.set state.busy false; raise e`.
-`-dlinear` then shows `push trap` directly after the CAS and no allocation or
-poll point on either release path.
+The shipped `Fun.protect` has a second, narrower window. On its exception
+path, `Printexc.get_raw_backtrace` allocates the backtrace before `~finally`
+runs. The allocation is made from C, so signal handlers do not run there, but
+an `Out_of_memory` can escape at that point with `busy` still set. The model
+covers this window with `AsyncExnBeforeRelease`, and
+`HpkeContext_async_release_stuck.cfg` fails `BusyReleased` in the same way.
 
-This fix and F1's rely on where native code currently places poll points. OCaml
-has no primitive for masking asynchronous exceptions.
+**Fix: direct release** (branch `fix/busy-async-exception`).
+
+```ocaml
+let with_busy state operation =
+  if not (Atomic.compare_and_set state.busy false true) then Error Error.Concurrent_use
+  else match operation () with
+    | result -> Atomic.set state.busy false; result
+    | exception exn ->
+        Atomic.set state.busy false;
+        Printexc.raise_with_backtrace exn (Printexc.get_raw_backtrace ())
+```
+
+`-dlinear` shows `push trap` directly after the `noalloc` CAS. Both exits
+release `busy` with a `noalloc` `caml_atomic_exchange_field` before anything
+allocates. The backtrace is fetched only after the release.
+
+In the model (`BusyRelease = "direct"`), a successful CAS leads straight into
+the body, and both `finally` steps release first. TLC shows:
+
+* `HpkeContext_fix_busy_async.cfg` (the F2 fix alone, with `AsyncExnAtCas` and
+  `AsyncExnBeforeRelease`) passes `BusyReleased`, `NotStuck`, `BusyIffOwner`,
+  the exact `Refinement` and the other checks of `HpkeContext.cfg`.
+* `HpkeContext_fixed_async.cfg` passes the same liveness checks with both
+  fixes and every asynchronous exception enabled.
+* The shipped code fails `BusyReleased` under the same flags
+  (`HpkeContext_async_cas_stuck.cfg` and `HpkeContext_async_release_stuck.cfg`).
+
+Both fixes rely on where native code currently places poll points. OCaml has no
+primitive for masking asynchronous exceptions.
 
 ### F3. At the message limit, the error differs from the RFC pseudocode
 
@@ -393,8 +510,9 @@ Some other poll points inside `Fun.protect` do not cause problems:
 
 An exception at any of these releases `busy` and leaves the sequence either
 unchanged or fully incremented. In the last case, the ciphertext is lost but
-its nonce is burned. After `work ()` returns, `Fun.protect` reaches
-`Atomic.set` without passing a poll point.
+its nonce is burned. After `work ()` returns normally, `Fun.protect` reaches
+`Atomic.set` without passing a poll point. Its exception path allocates the
+raw backtrace first, as described under F2.
 
 The poll-point analysis applies to native code (`ocamlopt` 5.4.1, arm64,
 without flambda). Bytecode was not examined.
@@ -404,7 +522,9 @@ without flambda). Bytecode was not examined.
 * The AEAD is abstract (INT-CTXT). Confidentiality and the key schedule are not
   modelled.
 * The sequence is 2 or 3 binary digits instead of 12 bytes. The carry logic is
-  the same as `increment_sequence`'s, byte for byte.
+  the same as `increment_sequence`'s, byte for byte, for both the shipped and
+  the carry-first code. The carry-first model allows more interruption points
+  than the real code has.
 * Safety, refinement and liveness were checked with two and three domains.
   Without liveness, three domains take 35 s.
 * Calls that fail the CAS (`Concurrent_use`) are not in the abstract spec.

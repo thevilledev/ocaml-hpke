@@ -86,16 +86,22 @@ Each finding is fixed on its own branch off `main`.
    * The fix stores the carried byte first and clears the trailing bytes last.
      Lean proves that every intermediate state is at or above the new value
      (`Atomicity.fixed_never_below`) and that no nonce is ever reused
-     (`ContextAsync.fixed_no_nonce_reuse`).
+     (`ContextAsync.fixed_no_nonce_reuse`). TLC confirms it with asynchronous
+     exceptions at every poll point (`HpkeContext_fix_seq_async_incr.cfg`,
+     `HpkeContext_fixed_async.cfg`).
    * Branch `fix/sequence-async-exception`.
 4. **An asynchronous exception can leave a context permanently busy.**
    * `with_busy` allocates between its compare-and-set and the handler
      `Fun.protect` installs. An exception at that poll point leaves `busy` set
      forever, and every later call returns `Concurrent_use`.
    * Safety holds; the context is unusable.
-   * TLC: `HpkeContext_async_cas_stuck.cfg`.
+   * TLC: `HpkeContext_async_cas_stuck.cfg`, and
+     `HpkeContext_async_release_stuck.cfg` for the backtrace allocation
+     `Fun.protect` makes on its exception path before releasing.
    * The fix installs the handler directly after the compare-and-set and
-     clears `busy` before anything allocates.
+     clears `busy` before anything allocates. TLC shows that `busy` is then
+     always released (`HpkeContext_fix_busy_async.cfg`,
+     `HpkeContext_fixed_async.cfg`).
    * Branch `fix/busy-async-exception`.
 
 Also found, but not bugs:

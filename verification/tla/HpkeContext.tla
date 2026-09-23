@@ -24,6 +24,17 @@
 (*   Fun.protect ~finally                                                  *)
 (*     "finally"      Atomic.set state.busy false, then return             *)
 (*     "finally_exn"  the same, then re-raise the exception                *)
+(*                                                                         *)
+(* Two constants select the fixed code instead of the shipped code:        *)
+(*   IncrementOrder = "carry_first"  (branch fix/sequence-async-exception) *)
+(*       `carry` finds the digit that absorbs the carry, reading only;     *)
+(*       one store increments it ("incr_store"); Bytes.fill then clears    *)
+(*       the trailing digits ("incr_fill"). An interruption can leave the  *)
+(*       sequence ahead of the new value, never behind the old one.        *)
+(*   BusyRelease = "direct"          (branch fix/busy-async-exception)     *)
+(*       with_busy matches on operation () right after the CAS and        *)
+(*       releases busy on both exits before anything allocates: there is  *)
+(*       no "gap", and the exception path releases before any poll.       *)
 (*   export (904-914)                                                      *)
 (*     "export"   reads only the immutable exporter secret; touches        *)
 (*                neither busy nor the sequence                            *)
@@ -42,8 +53,15 @@
 (*                        signal handler, Out_of_memory, ...) delivered    *)
 (*                        in "gap", i.e. after a successful CAS but before *)
 (*                        Fun.protect guards the release                   *)
-(*   AsyncExnInIncrement  an asynchronous exception delivered at the poll  *)
-(*                        in the prologue of `increment`                   *)
+(*   AsyncExnInIncrement  an asynchronous exception delivered inside       *)
+(*                        increment_sequence: at the poll in the prologue  *)
+(*                        of `increment` (lsb_first), or, conservatively,  *)
+(*                        before the store and between the digits cleared  *)
+(*                        by Bytes.fill (carry_first)                      *)
+(*   AsyncExnBeforeRelease  an exception raised on Fun.protect's exception *)
+(*                        path before ~finally runs, where                 *)
+(*                        Printexc.get_raw_backtrace allocates (shipped    *)
+(*                        code only; "direct" releases first)              *)
 (*   Mutation             a deliberately BROKEN variant of the code, used  *)
 (*                        only to show that the properties have teeth:     *)
 (*     "none"                 the code as written (default)                *)
@@ -62,6 +80,9 @@ CONSTANTS
     Ops,                  \* the calls domains make: SUBSET {"seal","open","export"}
     AsyncExnAtCas,        \* BOOLEAN, see above
     AsyncExnInIncrement,  \* BOOLEAN, see above
+    AsyncExnBeforeRelease, \* BOOLEAN, see above
+    IncrementOrder,       \* "lsb_first" (shipped) or "carry_first" (fix)
+    BusyRelease,          \* "fun_protect" (shipped) or "direct" (fix)
     RfcErrorOrder,        \* passed to Rfc9180Context
     Mutation              \* "none" unless demonstrating a broken variant
 
@@ -73,8 +94,13 @@ ASSUME SeqBase \in Nat /\ SeqBase >= 2
 ASSUME SeqWidth \in Nat /\ SeqWidth >= 1
 ASSUME Ops \subseteq {"seal", "open", "export"} /\ Ops # {}
 ASSUME AsyncExnAtCas \in BOOLEAN /\ AsyncExnInIncrement \in BOOLEAN
+ASSUME AsyncExnBeforeRelease \in BOOLEAN
+ASSUME IncrementOrder \in {"lsb_first", "carry_first"}
+ASSUME BusyRelease \in {"fun_protect", "direct"}
 ASSUME RfcErrorOrder \in BOOLEAN
 ASSUME Mutation \in Mutations
+\* The release_before_incr mutation is written for the shipped increment.
+ASSUME Mutation = "release_before_incr" => IncrementOrder = "lsb_first"
 
 MaxSeq == SeqBase ^ SeqWidth - 1
 
@@ -85,7 +111,8 @@ VARIABLES
     op,      \* per domain: the call in progress
     input,   \* per domain: the call's argument, [pt |-> .., ct |-> ..]
     nonce,   \* per domain: the sequence value read by `nonce state`
-    idx,     \* per domain: the `index` argument of `increment` (1-based)
+    idx,     \* per domain: the `index` argument of `increment` (1-based);
+             \* carry_first: the digit to store, then the digit to clear
     sealed,  \* ghost: nonces of successful seals
     opened,  \* ghost: nonces of successful opens
     lastEv   \* ghost: the last linearized result
@@ -134,8 +161,8 @@ Exhausted == \A i \in 1 .. SeqWidth : digits[i] = SeqBase - 1
 (* Program counters.                                                       *)
 
 \* Between a successful CAS and the release of busy.
-CriticalPCs == {"gap", "limit", "len", "nonce", "aead", "incr", "limit_after",
-                "release", "finally", "finally_exn"}
+CriticalPCs == {"gap", "limit", "len", "nonce", "aead", "incr", "incr_store",
+                "incr_fill", "limit_after", "release", "finally", "finally_exn"}
 InCritical(d) == pc[d] \in CriticalPCs
 
 PCs == CriticalPCs \cup {"idle", "cas", "incr_unlocked", "export"}
@@ -143,7 +170,7 @@ PCs == CriticalPCs \cup {"idle", "cas", "incr_unlocked", "export"}
 \* A domain whose call has consumed its nonce but not yet reached its
 \* linearization point: the abstract seq is still the nonce it read.
 Pending(d) ==
-    \/ pc[d] \in {"incr", "incr_unlocked", "limit_after"}
+    \/ pc[d] \in {"incr", "incr_store", "incr_fill", "incr_unlocked", "limit_after"}
     \/ Mutation = "incr_before_aead" /\ pc[d] = "aead"
 
 -----------------------------------------------------------------------------
@@ -160,6 +187,13 @@ Init ==
     /\ lastEv = R!NoEvent
 
 Goto(d, l) == pc' = [pc EXCEPT ![d] = l]
+
+\* The first step of the body of seal / open_ciphertext.
+BodyStart == IF Mutation = "check_after_incr" THEN "len" ELSE "limit"
+
+\* Where a successful CAS leads: the shipped with_busy still has to enter
+\* Fun.protect; the direct release has its handler in place already.
+AfterCas == IF BusyRelease = "direct" THEN BodyStart ELSE "gap"
 
 \* The call returns to its caller; the domain's locals are cleared.
 Return(d) ==
@@ -196,21 +230,22 @@ Invoke(d) ==
 
 \* with_busy: if not (Atomic.compare_and_set state.busy false true)
 \*            then Error Error.Concurrent_use else Fun.protect ...
+\* (BusyRelease = "direct": ... else match operation () with ...)
 Cas(d) ==
     /\ pc[d] = "cas"
     /\ IF Mutation = "no_cas"
-       THEN Goto(d, "gap") /\ UNCHANGED <<busy, op, input, nonce, idx>>
+       THEN Goto(d, AfterCas) /\ UNCHANGED <<busy, op, input, nonce, idx>>
        ELSE IF ~busy
-       THEN busy' = TRUE /\ Goto(d, "gap") /\ UNCHANGED <<op, input, nonce, idx>>
+       THEN busy' = TRUE /\ Goto(d, AfterCas) /\ UNCHANGED <<op, input, nonce, idx>>
        ELSE \* Concurrent_use: returns before any cryptography. The RFC has
             \* no such result; the abstract state does not change.
             Return(d) /\ UNCHANGED busy
     /\ UNCHANGED <<digits, sealed, opened, lastEv>>
 
-\* From the CAS to the handler of Fun.protect.
+\* From the CAS to the handler of Fun.protect (shipped code only).
 Gap(d) ==
     /\ pc[d] = "gap"
-    /\ \/ /\ Goto(d, IF Mutation = "check_after_incr" THEN "len" ELSE "limit")
+    /\ \/ /\ Goto(d, BodyStart)
           /\ UNCHANGED <<op, input, nonce, idx, lastEv>>
        \/ \* An asynchronous exception escapes with_busy: nothing will ever
           \* run Atomic.set state.busy false.
@@ -271,41 +306,101 @@ Aead(d) ==
           /\ UNCHANGED <<sealed, opened>>
     /\ UNCHANGED <<busy, digits, op, input, nonce, idx>>
 
-\* One call of `increment index` (idx[d] = index + 1):
+\* increment_sequence has returned: the call continues.
+IncrDone(d) ==
+    CASE Mutation = "incr_before_aead" ->
+           Goto(d, "aead")
+           /\ UNCHANGED <<op, input, nonce, idx, sealed, opened, lastEv>>
+      [] Mutation = "check_after_incr" ->
+           Goto(d, "limit_after")
+           /\ UNCHANGED <<op, input, nonce, idx, sealed, opened, lastEv>>
+      [] pc[d] = "incr_unlocked" ->
+           Decide(d, "Ok", nonce[d]) /\ RecordSuccess(d) /\ Return(d)
+      [] OTHER ->
+           Decide(d, "Ok", nonce[d]) /\ RecordSuccess(d)
+           /\ Goto(d, "finally")
+           /\ UNCHANGED <<op, input, nonce, idx>>
+
+\* A signal handler (or memprof/finaliser callback) raises inside
+\* increment_sequence; the digits stay as they are.
+IncrInterrupted(d) ==
+    /\ AsyncExnInIncrement
+    /\ pc[d] \in {"incr", "incr_store", "incr_fill"}
+    /\ Decide(d, "AsyncExn", NoNonce)
+    /\ Goto(d, "finally_exn")
+    /\ UNCHANGED <<digits, op, input, nonce, idx, sealed, opened>>
+
+\* IncrementOrder = "lsb_first" (shipped). One call of `increment index`
+\* (idx[d] = index + 1), whose prologue polls:
 \*   let value = Bytes.get_uint8 sequence index in
 \*   Bytes.set_uint8 sequence index ((value + 1) land 0xff);
 \*   if value = 0xff && index > 0 then increment (index - 1)
-Incr(d) ==
+IncrLsbFirst(d) ==
     LET i == idx[d]
         v == digits[i]
     IN
+    /\ IncrementOrder = "lsb_first"
     /\ pc[d] \in {"incr", "incr_unlocked"}
-    /\ \/ \* The poll in the prologue of `increment` runs a signal handler
-          \* (or memprof/finaliser callback) that raises.
-          /\ AsyncExnInIncrement
-          /\ pc[d] = "incr"
-          /\ Decide(d, "AsyncExn", NoNonce)
-          /\ Goto(d, "finally_exn")
-          /\ UNCHANGED <<digits, op, input, nonce, idx, sealed, opened>>
+    /\ \/ IncrInterrupted(d)
        \/ /\ digits' = [digits EXCEPT ![i] = (v + 1) % SeqBase]
           /\ IF v = SeqBase - 1 /\ i > 1
              THEN \* Carry: the tail call increment (index - 1) comes next.
                   /\ idx' = [idx EXCEPT ![d] = i - 1]
                   /\ UNCHANGED <<pc, op, input, nonce, sealed, opened, lastEv>>
-             ELSE \* increment_sequence returns.
-                  CASE Mutation = "incr_before_aead" ->
-                         Goto(d, "aead")
-                         /\ UNCHANGED <<op, input, nonce, idx, sealed, opened, lastEv>>
-                    [] Mutation = "check_after_incr" ->
-                         Goto(d, "limit_after")
-                         /\ UNCHANGED <<op, input, nonce, idx, sealed, opened, lastEv>>
-                    [] pc[d] = "incr_unlocked" ->
-                         Decide(d, "Ok", nonce[d]) /\ RecordSuccess(d) /\ Return(d)
-                    [] OTHER ->
-                         Decide(d, "Ok", nonce[d]) /\ RecordSuccess(d)
-                         /\ Goto(d, "finally")
-                         /\ UNCHANGED <<op, input, nonce, idx>>
+             ELSE IncrDone(d)
     /\ UNCHANGED busy
+
+\* The index `carry` returns: the last digit below SeqBase - 1, or the
+\* first digit if there is none.
+CarryIndex ==
+    LET below == {i \in 1 .. SeqWidth : digits[i] < SeqBase - 1}
+    IN IF below = {} THEN 1 ELSE CHOOSE i \in below : \A j \in below : j <= i
+
+\* IncrementOrder = "carry_first" (fix). `carry` only reads, so the scan is
+\* one step; an exception during it (or during the closure allocation
+\* before it) leaves the digits untouched.
+\*   let rec carry index =
+\*     if index = 0 || Bytes.get_uint8 sequence index < 0xff then index
+\*     else carry (index - 1)
+IncrCarryScan(d) ==
+    /\ IncrementOrder = "carry_first"
+    /\ pc[d] = "incr"
+    /\ \/ IncrInterrupted(d)
+       \/ /\ idx' = [idx EXCEPT ![d] = CarryIndex]
+          /\ Goto(d, "incr_store")
+          /\ UNCHANGED <<digits, op, input, nonce, sealed, opened, lastEv>>
+    /\ UNCHANGED busy
+
+\*   Bytes.set_uint8 sequence index ((Bytes.get_uint8 sequence index + 1) land 0xff)
+\* The real code has no poll between the scan and this store, nor between
+\* the store and Bytes.fill; the model allows an exception at both points.
+IncrStore(d) ==
+    LET k == idx[d] IN
+    /\ pc[d] = "incr_store"
+    /\ \/ IncrInterrupted(d)
+       \/ /\ digits' = [digits EXCEPT ![k] = (digits[k] + 1) % SeqBase]
+          /\ IF k = SeqWidth
+             THEN IncrDone(d)
+             ELSE /\ idx' = [idx EXCEPT ![d] = k + 1]
+                  /\ Goto(d, "incr_fill")
+                  /\ UNCHANGED <<op, input, nonce, sealed, opened, lastEv>>
+    /\ UNCHANGED busy
+
+\*   Bytes.fill sequence (index + 1) (Bytes.length sequence - index - 1) '\000'
+\* is one noalloc C call. The model clears one digit per step and allows an
+\* exception between them (conservative).
+IncrFill(d) ==
+    LET j == idx[d] IN
+    /\ pc[d] = "incr_fill"
+    /\ \/ IncrInterrupted(d)
+       \/ /\ digits' = [digits EXCEPT ![j] = 0]
+          /\ IF j = SeqWidth
+             THEN IncrDone(d)
+             ELSE /\ idx' = [idx EXCEPT ![d] = j + 1]
+                  /\ UNCHANGED <<pc, op, input, nonce, sealed, opened, lastEv>>
+    /\ UNCHANGED busy
+
+Incr(d) == IncrLsbFirst(d) \/ IncrCarryScan(d) \/ IncrStore(d) \/ IncrFill(d)
 
 \* MUTATION check_after_incr only: the exhaustion check runs on the
 \* already incremented sequence.
@@ -327,13 +422,23 @@ Release(d) ==
 
 \* Fun.protect ~finally:(fun () -> Atomic.set state.busy false): runs on
 \* normal return and on an exception (which it then re-raises).
+\* BusyRelease = "direct": Atomic.set state.busy false on both exits of
+\* the match, before anything allocates.
 Finally(d) ==
     /\ pc[d] \in {"finally", "finally_exn"}
-    /\ busy' = IF Mutation = "no_fun_protect" /\ pc[d] = "finally_exn"
-               THEN busy
-               ELSE FALSE
-    /\ Return(d)
-    /\ UNCHANGED <<digits, sealed, opened, lastEv>>
+    /\ \/ /\ busy' = IF Mutation = "no_fun_protect" /\ pc[d] = "finally_exn"
+                     THEN busy
+                     ELSE FALSE
+          /\ Return(d)
+          /\ UNCHANGED <<digits, sealed, opened, lastEv>>
+       \/ \* Shipped Fun.protect: `let work_bt = Printexc.get_raw_backtrace ()`
+          \* allocates before ~finally runs. An exception there escapes with
+          \* busy still set (the call's result stays an exception).
+          /\ AsyncExnBeforeRelease
+          /\ BusyRelease = "fun_protect"
+          /\ pc[d] = "finally_exn"
+          /\ Return(d)
+          /\ UNCHANGED <<busy, digits, sealed, opened, lastEv>>
 
 \* export: Labeled_kdf.expand on the exporter secret. No busy, no sequence.
 ExportCall(d) ==
@@ -432,6 +537,24 @@ Abs == INSTANCE Rfc9180Context
 Refinement == Abs!Spec
 
 SeqNeverDecreases == [][SeqAbs' >= SeqAbs]_vars
+
+\* Every nonce already used lies below the next one (the abstract seq):
+\* the sequence can never come back to a used nonce.
+UsedNoncesBelowSeq == \A n \in Range(sealed) \cup Range(opened) : n < SeqAbs
+
+\* The RFC context plus one transition for a call that an asynchronous
+\* exception interrupts inside increment_sequence: the call fails, and seq
+\* may move ahead by any amount (the nonces in between are burned, never
+\* used), but never back. The carry-first increment refines this; the
+\* shipped one does not, because it can move seq back.
+BurnNonces ==
+    /\ lastEv'.res = "AsyncExn"
+    /\ SeqAbs' > SeqAbs
+    /\ UNCHANGED <<sealed, opened>>
+
+AbsVars == Abs!vars
+
+RelaxedRefinement == Abs!Init /\ [][Abs!Next \/ BurnNonces]_AbsVars
 
 -----------------------------------------------------------------------------
 (* Liveness (check with FairSpec).                                         *)
