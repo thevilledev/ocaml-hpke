@@ -72,6 +72,12 @@ installable on 32-bit architectures.
   receiver is up to twice as fast and setting up a sender up to half again as
   fast. The NIST curves multiply the base point from a table and gain a little
   over a tenth.
+- Refuse an AES-GCM plaintext of 2^36 - 31 bytes as `Plaintext_too_long`.
+  Since 0.1.0 the limit was RFC 5116's, one byte beyond NIST SP 800-38D (RFC
+  5116 erratum 5219). mirage-crypto refuses that byte itself, so `Aead.seal`
+  and `Rfc9180.Sender.seal` returned `Internal_error` for it, where the
+  interface promises `Plaintext_too_long`. Every shorter plaintext seals as
+  before.
 - Keep the RFC 9180 wire behavior of the existing KEMs and modes unchanged
   from 0.2.0.
 
