@@ -949,10 +949,24 @@ module Rfc9180 = struct
           (Char.code state.base_nonce.[index]
           lxor Bytes.get_uint8 state.sequence index))
 
+  (* An allocation is a poll point, where a signal handler may raise. One
+     between setting [busy] and clearing it on the way out would leave it set
+     for good, and every later call would fail with [Concurrent_use].
+     [Fun.protect] allocates both before installing its handler and, on an
+     exception, before running [~finally]. Here nothing allocates between the
+     compare-and-set and the handler, nor between leaving [operation] and
+     clearing [busy]. *)
   let with_busy state operation =
     if not (Atomic.compare_and_set state.busy false true) then
       Error Error.Concurrent_use
-    else Fun.protect ~finally:(fun () -> Atomic.set state.busy false) operation
+    else
+      match operation () with
+      | result ->
+          Atomic.set state.busy false;
+          result
+      | exception exn ->
+          Atomic.set state.busy false;
+          Printexc.raise_with_backtrace exn (Printexc.get_raw_backtrace ())
 
   let seal state ~aad ~plaintext =
     with_busy state (fun () ->
