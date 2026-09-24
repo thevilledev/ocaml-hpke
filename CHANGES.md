@@ -67,6 +67,14 @@ installable on 32-bit architectures.
 - Check X25519 and X448 private-key clamping against literal bytes. The vector
   corpus cannot: it compares serializations that have both passed through the
   library's own clamp, and the primitives clamp again when they use a scalar.
+- Never let an interrupted `Sender.seal` or `Receiver.open_` rewind a
+  context's sequence number. Since 0.1.0, an exception raised by a signal
+  handler, such as `Sys.Break` or a timeout, could stop the increment between
+  two byte stores and leave the sequence 255 or more below the number just
+  used. A caller that caught it and kept the context then sealed under nonces
+  it had already used, and a receiver accepted replays. The increment now
+  stores the carried byte first, so an interrupted one can at most skip
+  sequence numbers.
 - Parse the Diffie-Hellman secret once per private key, and not on every
   exchange. Parsing derives the public key, a scalar multiplication whose
   result every exchange discarded. X25519 and X448 have no shortcut for the
