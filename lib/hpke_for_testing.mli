@@ -9,7 +9,10 @@
     Use {!Hpke.Rfc9180} instead.
 
     ML-KEM encapsulates from randomness and has no ephemeral key, so with an
-    ML-KEM suite these functions return {!Hpke.Error.Invalid_private_key}. To
+    ML-KEM suite {!setup_base_sender} and {!setup_psk_sender} return
+    {!Hpke.Error.Invalid_private_key}. {!setup_auth_sender} and
+    {!setup_auth_psk_sender} return {!Hpke.Error.Unsupported_mode} there, as the
+    ordinary Auth and AuthPSK setup functions do: ML-KEM has neither mode. To
     reproduce a vector that fixes that randomness, pass a generator that returns
     it as [~rng] to the ordinary {!Hpke.Rfc9180} setup function. *)
 
@@ -43,8 +46,10 @@ val setup_auth_sender :
   ('capability Hpke.Rfc9180.sender_setup, Hpke.Error.t) result
 (** The Auth-mode counterpart of {!setup_base_sender}:
     {!Hpke.Rfc9180.setup_auth_sender} with [ephemeral] as [skE]. [sender] is the
-    sender's static key [skS], as there. Returns {!Hpke.Error.Key_mismatch}
-    unless the suite and all three keys share one KEM. *)
+    sender's static key [skS], as there. Returns {!Hpke.Error.Unsupported_mode}
+    if the suite's KEM has no Auth mode, and otherwise
+    {!Hpke.Error.Key_mismatch} unless the suite and all three keys share one
+    KEM. *)
 
 val setup_auth_psk_sender :
   'capability Hpke.Suite.t ->
@@ -54,4 +59,4 @@ val setup_auth_psk_sender :
   psk:Hpke.Psk.t ->
   info:string ->
   ('capability Hpke.Rfc9180.sender_setup, Hpke.Error.t) result
-(** The AuthPSK-mode counterpart of {!setup_base_sender}. *)
+(** The AuthPSK-mode counterpart of {!setup_auth_sender}, with its errors. *)

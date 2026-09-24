@@ -477,7 +477,8 @@ module Private : sig
      breaks HPKE's security if that key is ever reused or disclosed. They back
      the [hpke.for_testing] library, which is the only supported way to reach
      them. ML-KEM encapsulates without an ephemeral key, so with an ML-KEM suite
-     they return [Invalid_private_key]. *)
+     the Base and PSK ones return [Invalid_private_key]. The Auth and AuthPSK
+     ones return [Unsupported_mode] there, as ML-KEM has neither mode. *)
 
   val setup_base_sender_with_ephemeral :
     'capability Suite.t ->

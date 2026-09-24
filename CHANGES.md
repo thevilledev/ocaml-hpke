@@ -56,8 +56,10 @@ installable on 32-bit architectures.
   `mlkem` exports the one ML-KEM itself runs on as `Mlkem.Fips202`, so the
   library still implements no primitive of its own.
 - `hpke.for_testing` refuses an ML-KEM suite, which has no ephemeral key to
-  choose. A generator that returns the fixed encapsulation randomness, passed
-  as `~rng` to the ordinary setup functions, reproduces such vectors.
+  choose: its Base and PSK senders return `Invalid_private_key`, and its Auth
+  and AuthPSK senders `Unsupported_mode`, as the ordinary Auth and AuthPSK
+  functions do. A generator that returns the fixed encapsulation randomness,
+  passed as `~rng` to the ordinary setup functions, reproduces such vectors.
 - Pin the `draft-ietf-hpke-pq-05` corpus: its three ML-KEM vectors that use an
   HKDF, replayed in full, and the fourth as far as the KEM goes.
 - Parse private keys through one exhaustive match on the KEM. The previous
