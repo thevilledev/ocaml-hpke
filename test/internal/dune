@@ -1,0 +1,21 @@
+; Checks of internals that the public interface reaches only through inputs
+; too large to build, such as a 64 GiB plaintext. The implementation is copied
+; in without lib/hpke.mli so that they can be called, and so it needs the
+; libraries of lib/dune: keep the two lists in sync.
+
+(rule
+ (copy# ../../lib/hpke.ml hpke_internal.ml))
+
+(test
+ (name test_internal)
+ (modules hpke_internal test_internal)
+ (libraries
+  mirage-crypto
+  mirage-crypto-ec
+  mirage-crypto-rng
+  curve448
+  mlkem
+  kdf.hkdf
+  digestif
+  eqaf
+  alcotest))

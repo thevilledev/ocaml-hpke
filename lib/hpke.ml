@@ -197,11 +197,16 @@ module Aead = struct
   let nonce_size _ = 12
   let tag_size _ = 16
 
+  (* The 32-bit block counter must not wrap. For AES-GCM that allows 2^32 - 2
+     blocks of 16 bytes (NIST SP 800-38D, Section 5.2.1.1: 2^39 - 256 bits). RFC
+     5116 prints 2^36 - 31 octets, one too many (erratum 5219), and
+     mirage-crypto rejects that byte with [Invalid_argument]. ChaCha20-Poly1305
+     allows 2^32 - 1 blocks of 64 bytes (RFC 8439, Section 2.8). *)
   let plaintext_fits id length =
     let length = Int64.of_int length in
     let maximum =
       match id with
-      | Aes_128_gcm | Aes_256_gcm -> Int64.sub (Int64.shift_left 1L 36) 31L
+      | Aes_128_gcm | Aes_256_gcm -> Int64.sub (Int64.shift_left 1L 36) 32L
       | Chacha20_poly1305 -> Int64.sub (Int64.shift_left 1L 38) 64L
     in
     Int64.compare length maximum <= 0
