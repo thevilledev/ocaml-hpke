@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — 2026-09-20
+## 0.3.0 — 2026-09-25
 
 Adds X448, the RFC 9180 Auth and AuthPSK modes, and the post-quantum ML-KEM
 KEMs. Two changes can break an upgrade from 0.2.0: `Kem.id` and `Error.t` gain

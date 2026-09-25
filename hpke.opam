@@ -31,17 +31,6 @@ depends: [
   "odoc" {with-doc}
   "ocamlformat" {with-dev-setup & = "0.29.0"}
 ]
-# Temporary: mlkem is not yet in the opam repository, and its repository has no
-# release tag yet, so this pins the commit that prepares 0.1.1, the first
-# version with Mlkem.Fips202. Remove this field once mlkem is published there;
-# the repository does not accept packages that pin, so it must go before a
-# release.
-pin-depends: [
-  [
-    "mlkem.0.1.1"
-    "git+https://github.com/thevilledev/ocaml-pq.git#766fb3f95bb6d5c5565fa948e20aaf9c3e255132"
-  ]
-]
 build: [
   ["dune" "subst"] {dev}
   ["dune" "build" "-p" name "-j" jobs]
