@@ -117,12 +117,14 @@ def sequence : List String := Id.run do
 
 /-! ## AEAD limits -/
 
+-- `lib/hpke.ml` carries the corrected AES-GCM bound, so the vectors come from
+-- `plaintextFitsFixed`; `plaintextFits` keeps the bound the findings are about.
 def limits : List String := Id.run do
   let mut out := []
   for a in AeadId.all do
     for len in [0, 1, 16, 2 ^ 36 - 33, 2 ^ 36 - 32, 2 ^ 36 - 31, 2 ^ 36 - 30,
         2 ^ 38 - 65, 2 ^ 38 - 64, 2 ^ 38 - 63, 2 ^ 40] do
-      out := out ++ [s!"plaintext_fits {aeadName a} {len} {bool (plaintextFits a len)}"]
+      out := out ++ [s!"plaintext_fits {aeadName a} {len} {bool (plaintextFitsFixed a len)}"]
   return out
 
 /-! ## Encodings -/
