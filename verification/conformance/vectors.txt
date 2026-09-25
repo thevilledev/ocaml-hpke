@@ -1306,7 +1306,7 @@ plaintext_fits aes128gcm 1 1
 plaintext_fits aes128gcm 16 1
 plaintext_fits aes128gcm 68719476703 1
 plaintext_fits aes128gcm 68719476704 1
-plaintext_fits aes128gcm 68719476705 1
+plaintext_fits aes128gcm 68719476705 0
 plaintext_fits aes128gcm 68719476706 0
 plaintext_fits aes128gcm 274877906879 0
 plaintext_fits aes128gcm 274877906880 0
@@ -1317,7 +1317,7 @@ plaintext_fits aes256gcm 1 1
 plaintext_fits aes256gcm 16 1
 plaintext_fits aes256gcm 68719476703 1
 plaintext_fits aes256gcm 68719476704 1
-plaintext_fits aes256gcm 68719476705 1
+plaintext_fits aes256gcm 68719476705 0
 plaintext_fits aes256gcm 68719476706 0
 plaintext_fits aes256gcm 274877906879 0
 plaintext_fits aes256gcm 274877906880 0
