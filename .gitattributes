@@ -1,0 +1,7 @@
+# Keep GitHub's language stats focused on the OCaml library.
+# The Lean and TLA+ models under verification/ are proofs, not the
+# implementation, so exclude them from language detection.
+verification/** linguist-detectable=false
+
+# The static project website is documentation.
+website/** linguist-documentation
