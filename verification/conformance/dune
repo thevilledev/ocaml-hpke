@@ -1,0 +1,21 @@
+; Replays vectors.txt, which the Lean mirrors in ../lean generate, against
+; lib/hpke.ml itself. The implementation is copied in without lib/hpke.mli so
+; that the internals the mirrors transcribe can be called.
+
+(rule
+ (copy ../../lib/hpke.ml hpke_impl.ml))
+
+(test
+ (name conformance)
+ (modules hpke_impl conformance)
+ (libraries
+  mirage-crypto
+  mirage-crypto-ec
+  mirage-crypto-rng
+  curve448
+  mlkem
+  kdf.hkdf
+  digestif
+  eqaf)
+ (action
+  (run %{test} %{dep:vectors.txt})))
