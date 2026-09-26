@@ -31,6 +31,26 @@ let kem_name = function
   | Mlkem768_x25519 -> "mlkem768x25519"
   | Mlkem1024_p384 -> "mlkem1024p384"
 
+let draft_kdf_name = function
+  | H.Draft_hpke_04.Kdf.Hkdf_sha256 -> "sha256"
+  | Hkdf_sha384 -> "sha384"
+  | Hkdf_sha512 -> "sha512"
+  | Shake128 -> "shake128"
+  | Shake256 -> "shake256"
+
+let draft_kdf name =
+  List.find
+    (fun k -> draft_kdf_name k = name)
+    H.Draft_hpke_04.Kdf.
+      [ Hkdf_sha256; Hkdf_sha384; Hkdf_sha512; Shake128; Shake256 ]
+
+(* A byte string field: hexadecimal, or [*<n>x<byte>] for [n] copies of one
+   byte. *)
+let field value =
+  if String.length value > 0 && value.[0] = '*' then
+    Scanf.sscanf value "*%dx%x" (fun n byte -> String.make n (Char.chr byte))
+  else of_hex value
+
 let kdf_name = function
   | H.Kdf.Hkdf_sha256 -> "sha256"
   | Hkdf_sha384 -> "sha384"
@@ -350,6 +370,215 @@ let check line =
              | None -> "none"
              | Some element -> to_hex element
            with Invalid_argument _ -> "raises")
+  | [ "draft_kdf_of_int"; n; _; _ ] ->
+      let expected =
+        String.concat " " (List.tl (List.tl (String.split_on_char ' ' line)))
+      in
+      expect line ~expected
+        ~actual:
+          (result draft_kdf_name (H.Draft_hpke_04.Kdf.of_int (int_of_string n)))
+  | [ "draft_kdf_sizes"; name; id; nh; two_stage ] ->
+      let k = draft_kdf name in
+      expect line
+        ~expected:(String.concat " " [ id; nh; two_stage ])
+        ~actual:
+          (Printf.sprintf "%d %d %s"
+             (H.Draft_hpke_04.Kdf.to_int k)
+             (H.Draft_hpke_04.Kdf.hash_size k)
+             (match H.Draft_hpke_04.Kdf.two_stage k with
+             | Some kdf -> kdf_name kdf
+             | None -> "-"))
+  | [ "length_prefixed"; value; status; output ] ->
+      expect line
+        ~expected:(status ^ " " ^ output)
+        ~actual:
+          (result
+             (fun v -> to_hex (String.sub v 0 (min 4 (String.length v))))
+             (H.Draft_hpke_04.length_prefixed "value" (field value)))
+  (* The mirror's framed input, run through the KDF and split, must be the
+     context the real key schedule builds. *)
+  | [
+   "one_stage_schedule";
+   k;
+   f;
+   a;
+   psk;
+   psk_id;
+   shared_secret;
+   info;
+   status;
+   input;
+  ] ->
+      let kdf =
+        match H.Draft_hpke_04.Kdf.schedule (draft_kdf f) with
+        | H.One_stage kdf -> kdf
+        | H.Two_stage _ -> invalid_arg "one_stage_schedule: two-stage KDF"
+      in
+      let psk =
+        if psk = "-" then None
+        else
+          match H.Psk.create ~secret:(of_hex psk) ~id:(of_hex psk_id) with
+          | Ok psk -> Some psk
+          | Error _ -> invalid_arg "one_stage_schedule: PSK"
+      in
+      let shared_secret = of_hex shared_secret and info = of_hex info in
+      let describe secret ~key ~base_nonce ~exporter_secret =
+        ignore secret;
+        let sealed =
+          match
+            H.Aead.seal key ~nonce:(String.make 12 '\001') ~aad:""
+              ~plaintext:"m"
+          with
+          | Ok sealed -> to_hex sealed
+          | Error _ -> "-"
+        in
+        String.concat " " [ sealed; to_hex base_nonce; to_hex exporter_secret ]
+      in
+      let expected, actual =
+        if a = "export" then
+          let suite =
+            H.Draft_hpke_04.Suite.export_only ~kem:(kem k) ~kdf:(draft_kdf f)
+          in
+          let expected =
+            match status with
+            | "ok" ->
+                let length = H.One_stage_kdf.hash_size kdf in
+                "ok "
+                ^ to_hex (H.One_stage_kdf.derive kdf (of_hex input) length)
+            | _ -> status ^ " " ^ input
+          in
+          ( expected,
+            result
+              (fun (context : H.Suite.export_only H.Rfc9180.context) ->
+                (* The capability types are abstract here, so the other
+                   constructor is not ruled out by the type. *)
+                match context with
+                | H.Rfc9180.Export_context state -> to_hex state.exporter_secret
+                | H.Rfc9180.Encryption_context _ -> "encryption context")
+              (H.Draft_hpke_04.one_stage_schedule suite kdf ~psk ~shared_secret
+                 ~info) )
+        else
+          let aead = aead a in
+          let suite =
+            H.Draft_hpke_04.Suite.create ~kem:(kem k) ~kdf:(draft_kdf f) ~aead
+          in
+          let nk = H.Aead.key_size aead and nn = H.Aead.nonce_size aead in
+          let expected =
+            match status with
+            | "ok" ->
+                let secret =
+                  H.One_stage_kdf.derive kdf (of_hex input)
+                    (nk + nn + H.One_stage_kdf.hash_size kdf)
+                in
+                let key =
+                  match H.Aead.key aead (String.sub secret 0 nk) with
+                  | Ok key -> key
+                  | Error _ -> invalid_arg "one_stage_schedule: key"
+                in
+                "ok "
+                ^ describe secret ~key ~base_nonce:(String.sub secret nk nn)
+                    ~exporter_secret:
+                      (String.sub secret (nk + nn)
+                         (H.One_stage_kdf.hash_size kdf))
+            | _ -> status ^ " " ^ input
+          in
+          ( expected,
+            result
+              (fun (context : H.Suite.encryption H.Rfc9180.context) ->
+                match context with
+                | H.Rfc9180.Encryption_context state ->
+                    describe "" ~key:state.key ~base_nonce:state.base_nonce
+                      ~exporter_secret:state.exporter_secret
+                | H.Rfc9180.Export_context _ -> "export context")
+              (H.Draft_hpke_04.one_stage_schedule suite kdf ~psk ~shared_secret
+                 ~info) )
+      in
+      expect line ~expected ~actual
+  | [ "one_stage_schedule_long"; k; f; a; shared_secret; info; status; _ ] ->
+      let kdf =
+        match H.Draft_hpke_04.Kdf.schedule (draft_kdf f) with
+        | H.One_stage kdf -> kdf
+        | H.Two_stage _ -> invalid_arg "one_stage_schedule_long"
+      in
+      let shared_secret = of_hex shared_secret and info = field info in
+      let status_of = function
+        | Ok _ -> "ok"
+        | Error e -> "error " ^ error_name e
+      in
+      let actual =
+        if a = "export" then
+          status_of
+            (H.Draft_hpke_04.one_stage_schedule
+               (H.Draft_hpke_04.Suite.export_only ~kem:(kem k)
+                  ~kdf:(draft_kdf f))
+               kdf ~psk:None ~shared_secret ~info)
+        else
+          status_of
+            (H.Draft_hpke_04.one_stage_schedule
+               (H.Draft_hpke_04.Suite.create ~kem:(kem k) ~kdf:(draft_kdf f)
+                  ~aead:(aead a))
+               kdf ~psk:None ~shared_secret ~info)
+      in
+      let expected =
+        match status with "ok" -> "ok" | _ -> "error invalid_length"
+      in
+      ignore status;
+      expect line ~expected ~actual
+  | [ "one_stage_export"; f; suite_id; secret; context; length; status; input ]
+    ->
+      let kdf =
+        match H.Draft_hpke_04.Kdf.schedule (draft_kdf f) with
+        | H.One_stage kdf -> kdf
+        | H.Two_stage _ -> invalid_arg "one_stage_export"
+      in
+      let length = int_of_string length in
+      let expected =
+        match status with
+        | "ok" ->
+            "ok " ^ to_hex (H.One_stage_kdf.derive kdf (of_hex input) length)
+        | _ -> status ^ " " ^ input
+      in
+      let state =
+        H.Rfc9180.Export_context
+          {
+            exporter_secret = of_hex secret;
+            kdf = H.One_stage kdf;
+            suite_id = of_hex suite_id;
+          }
+      in
+      expect line ~expected
+        ~actual:
+          (result to_hex
+             (H.Rfc9180.export state ~context:(of_hex context) ~length))
+  | [ "draft_setup"; s; r; f; mode; long; output ] ->
+      let info = if long = "1" then String.make 0x10000 'i' else "" in
+      let suite =
+        H.Draft_hpke_04.Suite.create ~kem:(kem s) ~kdf:(draft_kdf f)
+          ~aead:H.Aead.Aes_128_gcm
+      in
+      let r = kem r in
+      let recipient = public_key r and recipient_private = private_key r in
+      let encapsulated_key = List.assoc r encapsulations in
+      let sender =
+        match mode with
+        | "0" -> H.Draft_hpke_04.setup_base_sender ~rng suite ~recipient ~info
+        | _ -> H.Draft_hpke_04.setup_psk_sender ~rng suite ~recipient ~psk ~info
+      in
+      let receiver =
+        match mode with
+        | "0" ->
+            H.Draft_hpke_04.setup_base_receiver suite
+              ~recipient:recipient_private ~encapsulated_key ~info
+        | _ ->
+            H.Draft_hpke_04.setup_psk_receiver suite
+              ~recipient:recipient_private ~psk ~encapsulated_key ~info
+      in
+      let class_of = function
+        | Error (H.Error.Invalid_length _) -> "Invalid_length"
+        | result -> class_of result
+      in
+      expect (line ^ " (sender)") ~expected:output ~actual:(class_of sender);
+      expect (line ^ " (receiver)") ~expected:output ~actual:(class_of receiver)
   | [ "normalize_x25519"; bytes; output ] ->
       expect line ~expected:output
         ~actual:(raises (fun () -> H.Util.normalize_x25519 (of_hex bytes)))

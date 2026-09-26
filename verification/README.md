@@ -19,9 +19,10 @@ OCaml computes. `conformance/` checks this on every `dune runtest`:
   pseudo-random inputs and writes `conformance/vectors.txt`.
 * `conformance/conformance.ml` compiles a copy of `lib/hpke.ml` without its
   interface, calls the real internal functions, and compares every line.
-* It covers 8843 checks. Among them are all 2904 combinations of suite KEM,
+* It covers 13800 checks. Among them are all 2904 combinations of suite KEM,
   recipient KEM, sender KEM and mode, each run through the real sender and
-  receiver setup functions with real keys.
+  receiver setup functions with real keys, and all 2420 combinations of suite
+  KEM, recipient KEM, KDF, mode and input length for `Draft_hpke_04`.
 
 ## What is proved
 
@@ -41,6 +42,7 @@ listed under [Trusted base](#trusted-base).
 | `Scalar` | `curve_order`, `valid_nist_scalar`, `all_zero`, clamping, `derive_key_pair`, `generate_key_pair` | The curve orders equal OpenSSL's. `valid_nist_scalar b ↔ 0 < OS2IP(b) < n`, including `Eqaf.compare_be` modelled bit-exactly. Rejection sampling equals RFC 9180 §7.1.3. The hybrids' `random_scalar` is the concrete draft's `RandomScalar` and never yields a zero scalar. Clamping is RFC 7748's decodeScalar and idempotent. |
 | `Keys` | `parse_public_bytes`, `Public_key`, `Private_key`, `dh` | Lengths are checked first. NIST keys, and the NIST elements of hybrid keys, must be uncompressed SEC1. A hybrid key's ML-KEM half passes the modulus check. A parsed key re-serializes to its input. `dh` returns `Key_mismatch` before any exchange. |
 | `Kem` | `encap_with`, `dh_decap`, `encap`, `decap`, `Mlkem_kem`, `Hybrid_kem` | The code is RFC 9180's `Encap`, `Decap`, `AuthEncap` and `AuthDecap`, the draft's ML-KEM KEM, and the CG framework's `DeriveKeyPair`, `Encaps` and `Decaps` for the hybrids. Decapsulation recovers the encapsulated secret. The hybrids' `encap` uses the first of its eight draws that holds a scalar. A sender key on ML-KEM or a hybrid is `Unsupported_mode`, never dropped. The error mapping holds. |
+| `Draft` | `Draft_hpke_04`: `Kdf`, `length_prefixed`, `one_stage_schedule`, the one-stage branch of `export`, `setup_*` | The KDF registry is that of draft-ietf-hpke-hpke-04 and draft-ietf-hpke-pq-05, and its HKDFs are RFC 9180's. The one-stage key schedule hands the KDF exactly `CombineSecrets_OneStage`'s input, which binds the mode, PSK, shared secret, PSK identifier and `info` unambiguously, and splits the output into the draft's key, nonce and exporter secret. An input over 65535 bytes is `Invalid_length`, and a one-stage export `Export_length_out_of_range` exactly outside `[0, 65535]`; neither raises. |
 | `Setup` | `Psk`, `key_schedule`, `check_*`, `setup_*`, `normalized_open`, `Private` | Every typed mode passes `VerifyPSKInputs`. The key schedule is the RFC's, and sender and receiver agree. Every error contract in `hpke.mli` holds, and a computable table predicts every setup result. |
 | `TLA` | (foundation) | Specifications, invariants, behaviours, and stuttering refinement. |
 | `Context` | `with_busy`, `seal`, `open_ciphertext` | For any number of domains: mutual exclusion; no nonce reuse (the nonces used are exactly `ComputeNonce(0..k-1)`); the all-ones nonce is never used; and the implementation refines RFC 9180's atomic context. |
@@ -131,11 +133,6 @@ The following are assumed, not proved:
   * The mirage-crypto block-count checks are transcribed from its source, as
     are eqaf's `compare_be` and the NIST point checks. The conformance test
     exercises them where it can.
-* **`Hpke.Draft_hpke_04`.** The module of the successor draft came after the
-  mirrors, and its one-stage key schedule and export are not yet transcribed.
-  With an HKDF it runs the `Rfc9180` code that the mirrors cover. Its SHAKE
-  path is checked by the known-answer vectors of `draft-ietf-hpke-pq-05`, the
-  unit tests and the fuzzer.
 * **The mirrors.** They are hand-written transcriptions of the OCaml.
   `conformance/` checks them on concrete inputs, not symbolically.
   `Sys.max_string_length` and the placement of poll points (read from

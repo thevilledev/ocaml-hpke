@@ -18,6 +18,7 @@ import HpkeSpec.AeadLimits
 import HpkeSpec.Encoding
 import HpkeSpec.Scalar
 import HpkeSpec.Setup
+import HpkeSpec.Draft
 
 open Hpke
 
@@ -250,6 +251,79 @@ def randomScalars : List String := Id.run do
       out := out ++ [s!"random_scalar {kemName g} {hex seed} {raisesOptHex (Scalar.randomScalar g seed)}"]
   return out
 
+/-! ## `Draft_hpke_04` -/
+
+def draftKdfName : Draft.KdfId → String
+  | .hkdfSha256 => "sha256" | .hkdfSha384 => "sha384" | .hkdfSha512 => "sha512"
+  | .shake128 => "shake128" | .shake256 => "shake256"
+
+/-- A byte string field: hexadecimal, or `*<n>x<byte>` for `n` copies of one
+byte, which keeps inputs of 64 KiB off the line. -/
+def repeated (n : Nat) (b : UInt8) : String := s!"*{n}x{hexDigit (b.toNat / 16)}{hexDigit b.toNat}"
+
+def pskName : Draft.PskInput → String
+  | none => "- -"
+  | some (s, i) => s!"{hex s} {hex i}"
+
+def exceptHex : Except Err Bytes → String
+  | .ok b => "ok " ++ hex b
+  | .error e => "error " ++ errName e
+
+def draft : List String := Id.run do
+  let mut out := []
+  for n in (List.range 0x16).map Int.ofNat ++ [-1, 0xffff] do
+    out := out ++ [s!"draft_kdf_of_int {n} {result draftKdfName (Draft.KdfId.ofInt n)}"]
+  for k in Draft.KdfId.all do
+    out := out ++ [s!"draft_kdf_sizes {draftKdfName k} {k.toInt} {k.hashSize} {(k.twoStage.map kdfName).getD "-"}"]
+  -- `length_prefixed` on either side of its bound; the output's first bytes.
+  for n in [0, 1, 255, 256, 0xfffe, 0xffff, 0x10000, 0x10001] do
+    let r := (Draft.lengthPrefixedMirror (List.replicate n 0x61)).map (·.take 4)
+    out := out ++ [s!"length_prefixed {repeated n 0x61} {exceptHex r}"]
+  -- The input of the one-stage key schedule, for every KEM's secret length,
+  -- both one-stage KDFs, every AEAD and export-only, both modes, and inputs at
+  -- the bound.
+  let mut j := 0
+  for k in [KemId.x25519, .p384, .mlkem768X25519, .p521] do
+    for f in [Draft.KdfId.shake128, .shake256] do
+      for a in AeadId.all.map some ++ [none] do
+        for psk in [none, some (randBytes (17000 + j) 32, randBytes (17100 + j) (j % 5 + 1))] do
+          j := j + 1
+          let ss := randBytes (17200 + j) k.secretSize
+          let info := randBytes (17300 + j) (j % 4 * 11)
+          let sid := suiteIdSpec k.toInt.toNat f.toInt.toNat (suiteAeadId a).toNat
+          let (nk, nn) := Draft.keyNonceSizes a
+          let L := nk + nn + f.hashSize
+          let aname := (a.map aeadName).getD "export"
+          out := out ++ [s!"one_stage_schedule {kemName k} {draftKdfName f} {aname} {pskName psk} {hex ss} {hex info} {exceptHex (Draft.oneStageInput sid psk ss info L)}"]
+  for (f, a) in [(Draft.KdfId.shake128, some AeadId.aes128Gcm), (.shake256, none)] do
+    let k := KemId.x25519
+    let sid := suiteIdSpec k.toInt.toNat f.toInt.toNat (suiteAeadId a).toNat
+    let (nk, nn) := Draft.keyNonceSizes a
+    let L := nk + nn + f.hashSize
+    let ss := randBytes 17500 32
+    let aname := (a.map aeadName).getD "export"
+    for n in [0xffff, 0x10000] do
+      let r := (Draft.oneStageInput sid none ss (List.replicate n 0x69) L).map (fun _ => ([] : Bytes))
+      out := out ++ [s!"one_stage_schedule_long {kemName k} {draftKdfName f} {aname} {hex ss} {repeated n 0x69} {exceptHex r}"]
+  -- One-stage exports.
+  for f in [Draft.KdfId.shake128, .shake256] do
+    let sid := suiteIdSpec KemId.mlkem768X25519.toInt.toNat f.toInt.toNat 1
+    let secret := randBytes (17600 + f.hashSize) f.hashSize
+    for (ctx, L) in [([], 0), (ascii "c", 32), (randBytes 17700 40, 64), ([], 0xffff),
+        ([], 0x10000), ([], -1)] do
+      out := out ++ [s!"one_stage_export {draftKdfName f} {hex sid} {hex secret} {hex ctx} {L} {exceptHex (Draft.exportInput sid secret ctx L)}"]
+  -- Every suite KEM, key KEM, KDF and mode, with and without a 64 KiB info.
+  for s in KemId.all do
+    for r in KemId.all do
+      for f in Draft.KdfId.all do
+        for md in [0, 1] do
+          for long in [false, true] do
+            let c := match Draft.expectedClass s r f long with
+              | some .invalidLength => "Invalid_length"
+              | c => Setup.className c
+            out := out ++ [s!"draft_setup {kemName s} {kemName r} {draftKdfName f} {md} {bool long} {c}"]
+  return out
+
 /-! ## Setup error contracts -/
 
 /-- Every row of `Setup.table`: suite KEM, recipient KEM, sender KEM, mode,
@@ -259,7 +333,7 @@ def setups : List String :=
     s!"setup {kemName s} {kemName r} {(sk.map kemName).getD "-"} {md} {Setup.className c}"
 
 def all : List String :=
-  registry ++ sequence ++ limits ++ encodings ++ privateKeys ++ randomScalars ++ setups
+  registry ++ sequence ++ limits ++ encodings ++ privateKeys ++ randomScalars ++ setups ++ draft
 
 end Conformance
 
