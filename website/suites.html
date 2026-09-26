@@ -235,8 +235,6 @@ let exporter =
         <code>LabeledDerive</code>, which frames <code>info</code>, the PSK and
         its identifier, and an export's length, in two bytes each: a longer one
         is <code>Invalid_length</code> or <code>Export_length_out_of_range</code>.
-        TurboSHAKE128 and TurboSHAKE256 (<code>0x0012</code> and
-        <code>0x0013</code>) wait for <code>mlkem</code> to provide TurboSHAKE.
       </p>
 
       <h2 id="aead">AEAD</h2>
@@ -300,13 +298,6 @@ let exporter =
         <li>
           <strong>Compressed points.</strong> NIST public keys must be in
           uncompressed SEC1 form, which is what RFC 9180 specifies.
-        </li>
-        <li>
-          <strong>TurboSHAKE KDFs.</strong>
-          <code>draft-ietf-hpke-pq</code> also defines TurboSHAKE128 and
-          TurboSHAKE256, which take a Keccak permutation of 12 rounds that
-          neither <code>mlkem</code> nor Digestif provides yet. The library
-          implements no primitive of its own.
         </li>
         <li>
           <strong>Expanded ML-KEM private keys.</strong> Only the 64-byte seed

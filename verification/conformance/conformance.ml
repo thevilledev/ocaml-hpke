@@ -37,12 +37,22 @@ let draft_kdf_name = function
   | Hkdf_sha512 -> "sha512"
   | Shake128 -> "shake128"
   | Shake256 -> "shake256"
+  | Turboshake128 -> "turboshake128"
+  | Turboshake256 -> "turboshake256"
 
 let draft_kdf name =
   List.find
     (fun k -> draft_kdf_name k = name)
     H.Draft_hpke_04.Kdf.
-      [ Hkdf_sha256; Hkdf_sha384; Hkdf_sha512; Shake128; Shake256 ]
+      [
+        Hkdf_sha256;
+        Hkdf_sha384;
+        Hkdf_sha512;
+        Shake128;
+        Shake256;
+        Turboshake128;
+        Turboshake256;
+      ]
 
 (* A byte string field: hexadecimal, or [*<n>x<byte>] for [n] copies of one
    byte. *)

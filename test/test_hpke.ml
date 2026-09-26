@@ -1965,7 +1965,15 @@ let hybrid_rejection_sampling () =
 
 let draft_kdfs =
   Draft_hpke_04.Kdf.
-    [ Hkdf_sha256; Hkdf_sha384; Hkdf_sha512; Shake128; Shake256 ]
+    [
+      Hkdf_sha256;
+      Hkdf_sha384;
+      Hkdf_sha512;
+      Shake128;
+      Shake256;
+      Turboshake128;
+      Turboshake256;
+    ]
 
 let draft_registry () =
   List.iter
@@ -1996,8 +2004,10 @@ let draft_registry () =
       (Draft_hpke_04.Kdf.Hkdf_sha512, 0x0003, 64, Some Kdf.Hkdf_sha512);
       (Draft_hpke_04.Kdf.Shake128, 0x0010, 32, None);
       (Draft_hpke_04.Kdf.Shake256, 0x0011, 64, None);
+      (Draft_hpke_04.Kdf.Turboshake128, 0x0012, 32, None);
+      (Draft_hpke_04.Kdf.Turboshake256, 0x0013, 64, None);
     ];
-  Alcotest.(check int) "every draft KDF is listed" (List.length draft_kdfs) 5;
+  Alcotest.(check int) "every draft KDF is listed" (List.length draft_kdfs) 7;
   (* SHAKE of FIPS 202, from OpenSSL's hashlib: an empty input, cut to 8. *)
   check_hex "SHAKE128 Derive" "7f9c2ba4e88f827d"
     (ok (Draft_hpke_04.Kdf.derive Draft_hpke_04.Kdf.Shake128 "" 8));
@@ -2012,7 +2022,7 @@ let draft_registry () =
       match Draft_hpke_04.Kdf.of_int identifier with
       | Error (Error.Unsupported_algorithm id) when id = identifier -> ()
       | _ -> Alcotest.failf "KDF 0x%04x was accepted" identifier)
-    [ 0x0000; 0x0004; 0x0012; 0x0013; 0xffff ]
+    [ 0x0000; 0x0004; 0x0014; 0xffff ]
 
 (* Every KEM with every one-stage KDF and AEAD, in both modes. *)
 let draft_round_trips () =
@@ -2067,7 +2077,7 @@ let draft_round_trips () =
             "draft exports agree"
             (ok (Rfc9180.Sender.export setup.context ~context:"c" ~length:64))
             (ok (Rfc9180.Receiver.export receiver ~context:"c" ~length:64)))
-        Draft_hpke_04.Kdf.[ Shake128; Shake256 ])
+        Draft_hpke_04.Kdf.[ Shake128; Shake256; Turboshake128; Turboshake256 ])
     all_kems
 
 (* With an HKDF the draft is RFC 9180: from the same randomness, the same

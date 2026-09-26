@@ -37,8 +37,12 @@ exhaustive matches must handle.
   SHAKE256 (`0x0011`) of `draft-ietf-hpke-pq-05`, with which the key schedule
   and exports run `LabeledDerive`. Keys, AEADs, PSKs and contexts are shared.
   `Draft_hpke_04.Kdf.derive` exposes the unlabeled `Derive` for layered
-  protocols. TurboSHAKE128 and TurboSHAKE256 wait for `mlkem` to provide
-  TurboSHAKE.
+  protocols.
+- Add the one-stage TurboSHAKE128 (`0x0012`) and TurboSHAKE256 (`0x0013`) KDFs
+  of `draft-ietf-hpke-pq-05` to `Draft_hpke_04`, over `Mlkem.Rfc9861`. The pinned corpus gains the three
+  TurboSHAKE vectors in full, so it now holds all thirteen of the draft, and
+  the Lean mirror of `Draft_hpke_04` covers the new KDFs; the conformance
+  vectors grow to 15818 checks.
 - The pinned `draft-ietf-hpke-pq-05` corpus gains the four SHAKE vectors in
   full, run through `Draft_hpke_04`, which also reproduces the six HKDF
   vectors and the 64 RFC 9180 Base and PSK vectors.

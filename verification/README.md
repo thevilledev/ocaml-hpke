@@ -19,9 +19,9 @@ OCaml computes. `conformance/` checks this on every `dune runtest`:
   pseudo-random inputs and writes `conformance/vectors.txt`.
 * `conformance/conformance.ml` compiles a copy of `lib/hpke.ml` without its
   interface, calls the real internal functions, and compares every line.
-* It covers 13800 checks. Among them are all 2904 combinations of suite KEM,
+* It covers 15818 checks. Among them are all 2904 combinations of suite KEM,
   recipient KEM, sender KEM and mode, each run through the real sender and
-  receiver setup functions with real keys, and all 2420 combinations of suite
+  receiver setup functions with real keys, and all 3388 combinations of suite
   KEM, recipient KEM, KDF, mode and input length for `Draft_hpke_04`.
 
 ## What is proved
@@ -122,9 +122,9 @@ Also found, but not bugs:
 
 The following are assumed, not proved:
 
-* **Primitives.** The HKDF, AES-GCM, ChaCha20-Poly1305, SHAKE256, SHA3-256,
-  ML-KEM and curve implementations of mirage-crypto, digestif, kdf, curve448
-  and mlkem.
+* **Primitives.** The HKDF, AES-GCM, ChaCha20-Poly1305, SHAKE, TurboSHAKE,
+  SHA3-256, ML-KEM and curve implementations of mirage-crypto, digestif, kdf,
+  curve448 and mlkem.
   * `Kem.lean` states what it needs as named hypotheses: DH commutativity
     (for the hybrids' nominal groups too), SHAKE256 and ciphertext lengths,
     canonical point encodings, FIPS 203 correctness, and parsers accepting

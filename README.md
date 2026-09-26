@@ -39,8 +39,7 @@ Usage, ciphersuites, the security model, and development notes:
 | Post-quantum ML-KEM KEMs of `draft-ietf-hpke-pq`, in the Base and PSK modes | Implemented |
 | Post-quantum/traditional hybrid KEMs of the same draft, in the Base and PSK modes | Implemented |
 | `draft-ietf-hpke-hpke-04`, the successor draft, in `Hpke.Draft_hpke_04` | Implemented |
-| SHAKE128 and SHAKE256 KDFs of `draft-ietf-hpke-pq`, in `Hpke.Draft_hpke_04` | Implemented |
-| TurboSHAKE128 and TurboSHAKE256 KDFs of the same draft | Deferred until `mlkem` provides TurboSHAKE |
+| SHAKE128, SHAKE256, TurboSHAKE128 and TurboSHAKE256 KDFs of `draft-ietf-hpke-pq`, in `Hpke.Draft_hpke_04` | Implemented |
 | Application wire framing | Deferred to applications |
 
 The deferred features are intentionally out of scope for now. They do not
@@ -161,9 +160,9 @@ Draft_hpke_04.seal_base ~rng suite ~recipient ~info ~aad ~plaintext
 
 With an HKDF a suite of this module is the RFC 9180 suite of the same
 identifiers: it produces the same encapsulations, ciphertexts and exports. With
-SHAKE the key schedule derives the key, base nonce and exporter secret in one
+SHAKE or TurboSHAKE the key schedule derives the key, base nonce and exporter secret in one
 `LabeledDerive`, `info`, a PSK and its identifier may each hold at most 65535
-bytes, and so may an export. TurboSHAKE is not provided until `mlkem` offers it.
+bytes, and so may an export.
 The draft is not yet an RFC; a revision that changes the wire gets a module of
 its own.
 

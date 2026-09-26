@@ -6,8 +6,8 @@ import HpkeSpec.Encoding
 # `Draft_hpke_04`: the successor draft and its one-stage KDFs
 
 Mirrors of `Draft_hpke_04` in `lib/hpke.ml`, the module for
-draft-ietf-hpke-hpke-04 with the SHAKE KDFs of draft-ietf-hpke-pq-05
-Section 5, and the specifications they implement:
+draft-ietf-hpke-hpke-04 with the SHAKE and TurboSHAKE KDFs of
+draft-ietf-hpke-pq-05 Section 5, and the specifications they implement:
 
 * `Draft_hpke_04.Kdf`: its KDF registry, against the KDF tables of both drafts,
   and its HKDFs against RFC 9180's;
@@ -33,11 +33,12 @@ namespace Draft
 /-- `Draft_hpke_04.Kdf.id`. -/
 inductive KdfId where
   | hkdfSha256 | hkdfSha384 | hkdfSha512 | shake128 | shake256
+  | turboshake128 | turboshake256
   deriving DecidableEq, Repr, Inhabited
 
 /-- `One_stage_kdf.id`. -/
 inductive OneStage where
-  | shake128 | shake256
+  | shake128 | shake256 | turboshake128 | turboshake256
   deriving DecidableEq, Repr, Inhabited
 
 /-- `schedule_kdf`: how a context's KDF runs. -/
@@ -48,7 +49,8 @@ inductive Schedule where
 
 namespace KdfId
 
-def all : List KdfId := [hkdfSha256, hkdfSha384, hkdfSha512, shake128, shake256]
+def all : List KdfId :=
+  [hkdfSha256, hkdfSha384, hkdfSha512, shake128, shake256, turboshake128, turboshake256]
 
 theorem mem_all (k : KdfId) : k ∈ all := by cases k <;> simp [all]
 
@@ -56,11 +58,13 @@ theorem mem_all (k : KdfId) : k ∈ all := by cases k <;> simp [all]
 def toInt : KdfId → Int
   | hkdfSha256 => 0x0001 | hkdfSha384 => 0x0002 | hkdfSha512 => 0x0003
   | shake128 => 0x0010 | shake256 => 0x0011
+  | turboshake128 => 0x0012 | turboshake256 => 0x0013
 
 /-- Mirror of `Kdf.of_int`. -/
 def ofInt : Int → Except Err KdfId
   | 0x0001 => .ok hkdfSha256 | 0x0002 => .ok hkdfSha384 | 0x0003 => .ok hkdfSha512
   | 0x0010 => .ok shake128 | 0x0011 => .ok shake256
+  | 0x0012 => .ok turboshake128 | 0x0013 => .ok turboshake256
   | id => .error (.unsupportedAlgorithm id)
 
 /-- Mirror of `Kdf.schedule`. -/
@@ -70,11 +74,13 @@ def schedule : KdfId → Schedule
   | hkdfSha512 => .twoStage .hkdfSha512
   | shake128 => .oneStage .shake128
   | shake256 => .oneStage .shake256
+  | turboshake128 => .oneStage .turboshake128
+  | turboshake256 => .oneStage .turboshake256
 
 /-- Mirror of `One_stage_kdf.hash_size`. -/
 def oneStageHashSize : OneStage → Nat
-  | .shake128 => 32
-  | .shake256 => 64
+  | .shake128 | .turboshake128 => 32
+  | .shake256 | .turboshake256 => 64
 
 /-- Mirror of `Kdf.hash_size`. -/
 def hashSize (k : KdfId) : Nat :=
@@ -99,6 +105,8 @@ def kdfTable : KdfId → Int × Nat × Bool
   | .hkdfSha512 => (0x0003, 64, true)
   | .shake128 => (0x0010, 32, false)
   | .shake256 => (0x0011, 64, false)
+  | .turboshake128 => (0x0012, 32, false)
+  | .turboshake256 => (0x0013, 64, false)
 
 theorem kdf_matches_table (k : KdfId) :
     kdfTable k = (k.toInt, k.hashSize, k.twoStage.isSome) := by
@@ -117,7 +125,8 @@ theorem KdfId.ofInt_error {n : Int} (h : ∀ k : KdfId, k.toInt ≠ n) :
   unfold KdfId.ofInt
   split <;> first | rfl | (exfalso; first
     | exact h .hkdfSha256 rfl | exact h .hkdfSha384 rfl | exact h .hkdfSha512 rfl
-    | exact h .shake128 rfl | exact h .shake256 rfl)
+    | exact h .shake128 rfl | exact h .shake256 rfl
+    | exact h .turboshake128 rfl | exact h .turboshake256 rfl)
 
 /-- The two-stage KDFs of the draft are RFC 9180's: the same identifier and
 `Nh`, so a suite with one of them has the `suite_id` of the RFC 9180 suite. -/

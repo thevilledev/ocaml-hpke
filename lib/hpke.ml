@@ -1252,14 +1252,21 @@ let decap recipient ~sender ~encapsulated_key =
    schedule of draft-ietf-hpke-hpke takes. [Derive(ikm, L)] is SHAKE itself
    (FIPS 202), and [Nh] is the security strength. *)
 module One_stage_kdf = struct
-  type id = Shake128 | Shake256
+  type id = Shake128 | Shake256 | Turboshake128 | Turboshake256
 
-  let hash_size = function Shake128 -> 32 | Shake256 -> 64
+  let hash_size = function
+    | Shake128 | Turboshake128 -> 32
+    | Shake256 | Turboshake256 -> 64
 
+  (* draft-ietf-hpke-pq, Section 5: TurboSHAKE with D = 0x1F. *)
   let derive id input length =
     match id with
     | Shake128 -> Mlkem.Fips202.shake128 ~output_length:length input
     | Shake256 -> Mlkem.Fips202.shake256 ~output_length:length input
+    | Turboshake128 ->
+        Mlkem.Rfc9861.turboshake128 ~domain:0x1f ~output_length:length input
+    | Turboshake256 ->
+        Mlkem.Rfc9861.turboshake256 ~domain:0x1f ~output_length:length input
 end
 
 (* The KDF a context exports with: an RFC 9180 HKDF, or a one-stage KDF, which
@@ -1686,7 +1693,14 @@ end
 
 module Draft_hpke_04 = struct
   module Kdf = struct
-    type id = Hkdf_sha256 | Hkdf_sha384 | Hkdf_sha512 | Shake128 | Shake256
+    type id =
+      | Hkdf_sha256
+      | Hkdf_sha384
+      | Hkdf_sha512
+      | Shake128
+      | Shake256
+      | Turboshake128
+      | Turboshake256
 
     let to_int = function
       | Hkdf_sha256 -> 0x0001
@@ -1694,6 +1708,8 @@ module Draft_hpke_04 = struct
       | Hkdf_sha512 -> 0x0003
       | Shake128 -> 0x0010
       | Shake256 -> 0x0011
+      | Turboshake128 -> 0x0012
+      | Turboshake256 -> 0x0013
 
     let of_int = function
       | 0x0001 -> Ok Hkdf_sha256
@@ -1701,6 +1717,8 @@ module Draft_hpke_04 = struct
       | 0x0003 -> Ok Hkdf_sha512
       | 0x0010 -> Ok Shake128
       | 0x0011 -> Ok Shake256
+      | 0x0012 -> Ok Turboshake128
+      | 0x0013 -> Ok Turboshake256
       | id -> Error (Error.Unsupported_algorithm id)
 
     let pp ppf = function
@@ -1709,6 +1727,8 @@ module Draft_hpke_04 = struct
       | Hkdf_sha512 -> Format.pp_print_string ppf "HKDF-SHA512"
       | Shake128 -> Format.pp_print_string ppf "SHAKE128"
       | Shake256 -> Format.pp_print_string ppf "SHAKE256"
+      | Turboshake128 -> Format.pp_print_string ppf "TurboSHAKE128"
+      | Turboshake256 -> Format.pp_print_string ppf "TurboSHAKE256"
 
     (* How the key schedule runs the KDF: two-stage as RFC 9180 does, or one
        stage. *)
@@ -1718,6 +1738,8 @@ module Draft_hpke_04 = struct
       | Hkdf_sha512 -> Two_stage Hpke_kdf.Hkdf_sha512
       | Shake128 -> One_stage One_stage_kdf.Shake128
       | Shake256 -> One_stage One_stage_kdf.Shake256
+      | Turboshake128 -> One_stage One_stage_kdf.Turboshake128
+      | Turboshake256 -> One_stage One_stage_kdf.Turboshake256
 
     let two_stage id =
       match schedule id with Two_stage kdf -> Some kdf | One_stage _ -> None

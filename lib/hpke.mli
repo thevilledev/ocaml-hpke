@@ -513,11 +513,11 @@ module Draft_hpke_04 : sig
       The draft is RFC 9180 without the Auth and AuthPSK modes, and with a
       second kind of KDF. With an HKDF a suite runs the RFC 9180 Base and PSK
       modes unchanged, so its keys, encapsulations, ciphertexts and exports are
-      those of {!Rfc9180}. With a one-stage KDF, SHAKE128 or SHAKE256, the key
-      schedule derives the key, base nonce and exporter secret in one call of
-      [LabeledDerive], and so does {!Sender.export}. Every KEM works with every
-      KDF, those of the draft included. TurboSHAKE128 and TurboSHAKE256
-      ([0x0012] and [0x0013]) are not provided yet.
+      those of {!Rfc9180}. With a one-stage KDF, SHAKE128, SHAKE256,
+      TurboSHAKE128 or TurboSHAKE256, the key schedule derives the key, base
+      nonce and exporter secret in one call of [LabeledDerive], and so does
+      {!Sender.export}. Every KEM works with every KDF, those of the draft
+      included.
 
       Keys, KEMs, AEADs, PSKs, errors and contexts are those of the rest of the
       library. {!Private_key.to_bytes} clamps X25519 and X448 keys, where the
@@ -530,8 +530,17 @@ module Draft_hpke_04 : sig
   module Kdf : sig
     (** The KDF registry of [draft-ietf-hpke-hpke-04] and
         [draft-ietf-hpke-pq-05]: the HKDFs of RFC 9180, which are two-stage, and
-        the one-stage SHAKE128 ([0x0010]) and SHAKE256 ([0x0011]). *)
-    type id = Hkdf_sha256 | Hkdf_sha384 | Hkdf_sha512 | Shake128 | Shake256
+        the one-stage SHAKE128 ([0x0010]), SHAKE256 ([0x0011]), TurboSHAKE128
+        ([0x0012]) and TurboSHAKE256 ([0x0013]), the latter two with the domain
+        byte [0x1F]. *)
+    type id =
+      | Hkdf_sha256
+      | Hkdf_sha384
+      | Hkdf_sha512
+      | Shake128
+      | Shake256
+      | Turboshake128
+      | Turboshake256
 
     val to_int : id -> int
     val of_int : int -> (id, Error.t) result

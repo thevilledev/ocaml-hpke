@@ -24,7 +24,7 @@ HYBRID_KEMS = {0x0050, 0x0051, 0x647A}
 SUPPORTED_KEMS = MLKEM_KEMS | HYBRID_KEMS
 SUPPORTED_KDFS = {0x0001, 0x0002, 0x0003}
 # SHAKE128 and SHAKE256, the one-stage KDFs that Hpke.Draft_hpke_04 provides.
-DRAFT_KDFS = {0x0010, 0x0011}
+DRAFT_KDFS = {0x0010, 0x0011, 0x0012, 0x0013}
 DH_KEMS = {0x0010, 0x0011, 0x0012, 0x0020, 0x0021}
 SUPPORTED_AEADS = {0x0001, 0x0002, 0x0003, 0xFFFF}
 COPIED_FIELDS = (
@@ -107,18 +107,18 @@ def main() -> None:
     draft_vectors = [
         reduce_vector(vector, COPIED_FIELDS) for vector in source if draft_selected(vector)
     ]
-    if len(draft_vectors) != 4:
-        raise SystemExit(f"expected 4 SHAKE vectors, found {len(draft_vectors)}")
+    if len(draft_vectors) != 7:
+        raise SystemExit(f"expected 7 SHA-3 vectors, found {len(draft_vectors)}")
     if {vector["kdf_id"] for vector in draft_vectors} != DRAFT_KDFS:
         raise SystemExit("expected SHAKE vectors for both SHAKE KDFs")
 
-    kem_only_vectors = [
+    kem_only_vectors: list[dict[str, Any]] = [
         reduce_vector(vector, KEM_ONLY_FIELDS)
         for vector in source
         if supported_kem(vector) and not selected(vector) and not draft_selected(vector)
     ]
-    if len(kem_only_vectors) != 1:
-        raise SystemExit(f"expected 1 KEM-only vector, found {len(kem_only_vectors)}")
+    if kem_only_vectors:
+        raise SystemExit(f"expected no KEM-only vector, found {len(kem_only_vectors)}")
 
     output = {
         "source": {

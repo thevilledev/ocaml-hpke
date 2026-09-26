@@ -256,6 +256,7 @@ def randomScalars : List String := Id.run do
 def draftKdfName : Draft.KdfId → String
   | .hkdfSha256 => "sha256" | .hkdfSha384 => "sha384" | .hkdfSha512 => "sha512"
   | .shake128 => "shake128" | .shake256 => "shake256"
+  | .turboshake128 => "turboshake128" | .turboshake256 => "turboshake256"
 
 /-- A byte string field: hexadecimal, or `*<n>x<byte>` for `n` copies of one
 byte, which keeps inputs of 64 KiB off the line. -/
@@ -280,22 +281,24 @@ def draft : List String := Id.run do
     let r := (Draft.lengthPrefixedMirror (List.replicate n 0x61)).map (·.take 4)
     out := out ++ [s!"length_prefixed {repeated n 0x61} {exceptHex r}"]
   -- The input of the one-stage key schedule, for every KEM's secret length,
-  -- both one-stage KDFs, every AEAD and export-only, both modes, and inputs at
-  -- the bound.
+  -- every one-stage KDF, every AEAD and export-only, both modes, and inputs at
+  -- the bound. The TurboSHAKE lines follow the SHAKE ones.
   let mut j := 0
-  for k in [KemId.x25519, .p384, .mlkem768X25519, .p521] do
-    for f in [Draft.KdfId.shake128, .shake256] do
-      for a in AeadId.all.map some ++ [none] do
-        for psk in [none, some (randBytes (17000 + j) 32, randBytes (17100 + j) (j % 5 + 1))] do
-          j := j + 1
-          let ss := randBytes (17200 + j) k.secretSize
-          let info := randBytes (17300 + j) (j % 4 * 11)
-          let sid := suiteIdSpec k.toInt.toNat f.toInt.toNat (suiteAeadId a).toNat
-          let (nk, nn) := Draft.keyNonceSizes a
-          let L := nk + nn + f.hashSize
-          let aname := (a.map aeadName).getD "export"
-          out := out ++ [s!"one_stage_schedule {kemName k} {draftKdfName f} {aname} {pskName psk} {hex ss} {hex info} {exceptHex (Draft.oneStageInput sid psk ss info L)}"]
-  for (f, a) in [(Draft.KdfId.shake128, some AeadId.aes128Gcm), (.shake256, none)] do
+  for fs in [[Draft.KdfId.shake128, .shake256], [.turboshake128, .turboshake256]] do
+    for k in [KemId.x25519, .p384, .mlkem768X25519, .p521] do
+      for f in fs do
+        for a in AeadId.all.map some ++ [none] do
+          for psk in [none, some (randBytes (17000 + j) 32, randBytes (17100 + j) (j % 5 + 1))] do
+            j := j + 1
+            let ss := randBytes (17200 + j) k.secretSize
+            let info := randBytes (17300 + j) (j % 4 * 11)
+            let sid := suiteIdSpec k.toInt.toNat f.toInt.toNat (suiteAeadId a).toNat
+            let (nk, nn) := Draft.keyNonceSizes a
+            let L := nk + nn + f.hashSize
+            let aname := (a.map aeadName).getD "export"
+            out := out ++ [s!"one_stage_schedule {kemName k} {draftKdfName f} {aname} {pskName psk} {hex ss} {hex info} {exceptHex (Draft.oneStageInput sid psk ss info L)}"]
+  for (f, a) in [(Draft.KdfId.shake128, some AeadId.aes128Gcm), (.shake256, none),
+      (.turboshake128, some AeadId.chacha20Poly1305), (.turboshake256, none)] do
     let k := KemId.x25519
     let sid := suiteIdSpec k.toInt.toNat f.toInt.toNat (suiteAeadId a).toNat
     let (nk, nn) := Draft.keyNonceSizes a
@@ -306,7 +309,7 @@ def draft : List String := Id.run do
       let r := (Draft.oneStageInput sid none ss (List.replicate n 0x69) L).map (fun _ => ([] : Bytes))
       out := out ++ [s!"one_stage_schedule_long {kemName k} {draftKdfName f} {aname} {hex ss} {repeated n 0x69} {exceptHex r}"]
   -- One-stage exports.
-  for f in [Draft.KdfId.shake128, .shake256] do
+  for f in [Draft.KdfId.shake128, .shake256, .turboshake128, .turboshake256] do
     let sid := suiteIdSpec KemId.mlkem768X25519.toInt.toNat f.toInt.toNat 1
     let secret := randBytes (17600 + f.hashSize) f.hashSize
     for (ctx, L) in [([], 0), (ascii "c", 32), (randBytes 17700 40, 64), ([], 0xffff),

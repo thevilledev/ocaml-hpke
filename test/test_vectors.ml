@@ -656,10 +656,10 @@ let () =
     vectors_of "HPKE_PQ_TEST_VECTORS" "kem_only_vectors"
   in
   Alcotest.(check int)
-    "KEM-only PQ vector count" 1
+    "KEM-only PQ vector count" 0
     (List.length pq_kem_only_vectors);
   let pq_draft_vectors = vectors_of "HPKE_PQ_TEST_VECTORS" "draft_vectors" in
-  Alcotest.(check int) "SHAKE PQ vector count" 4 (List.length pq_draft_vectors);
+  Alcotest.(check int) "SHA-3 PQ vector count" 7 (List.length pq_draft_vectors);
   (* The draft has no Auth or AuthPSK mode. *)
   let base_and_psk =
     List.filter (fun vector -> member_int "mode" vector < 2) vectors
