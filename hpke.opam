@@ -2,7 +2,8 @@ opam-version: "2.0"
 synopsis: "Idiomatic RFC 9180 Hybrid Public Key Encryption for OCaml"
 description: """
 An idiomatic, misuse-resistant implementation of the RFC 9180 HPKE Base, PSK,
-Auth, and AuthPSK modes, with Diffie-Hellman and post-quantum ML-KEM KEMs.
+Auth, and AuthPSK modes, with Diffie-Hellman, post-quantum ML-KEM, and
+post-quantum/traditional hybrid KEMs such as X-Wing.
 Cryptographic primitives are delegated to Mirage Crypto, curve448, mlkem,
 Digestif, and kdf.
 """

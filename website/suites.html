@@ -77,6 +77,9 @@ let exporter =
             <tr><td><code>Kem.Mlkem512</code></td><td>ML-KEM-512</td><td class="n">0x0040</td><td class="n">800</td><td class="n">768</td><td class="n">64</td><td class="n">32</td><td>no</td></tr>
             <tr><td><code>Kem.Mlkem768</code></td><td>ML-KEM-768</td><td class="n">0x0041</td><td class="n">1,184</td><td class="n">1,088</td><td class="n">64</td><td class="n">32</td><td>no</td></tr>
             <tr><td><code>Kem.Mlkem1024</code></td><td>ML-KEM-1024</td><td class="n">0x0042</td><td class="n">1,568</td><td class="n">1,568</td><td class="n">64</td><td class="n">32</td><td>no</td></tr>
+            <tr><td><code>Kem.Mlkem768_p256</code></td><td>MLKEM768-P256</td><td class="n">0x0050</td><td class="n">1,249</td><td class="n">1,153</td><td class="n">32</td><td class="n">32</td><td>no</td></tr>
+            <tr><td><code>Kem.Mlkem1024_p384</code></td><td>MLKEM1024-P384</td><td class="n">0x0051</td><td class="n">1,665</td><td class="n">1,665</td><td class="n">32</td><td class="n">32</td><td>no</td></tr>
+            <tr><td><code>Kem.Mlkem768_x25519</code></td><td>MLKEM768-X25519 (X-Wing)</td><td class="n">0x647a</td><td class="n">1,216</td><td class="n">1,120</td><td class="n">32</td><td class="n">32</td><td>no</td></tr>
           </tbody>
         </table>
       </div>
@@ -84,7 +87,8 @@ let exporter =
       <p class="fine">
         Sizes are bytes. A Diffie-Hellman KEM encapsulates to an ephemeral
         public key, so its encapsulated key has the size of a public key;
-        ML-KEM encapsulates to a ciphertext, which has a size of its own.
+        ML-KEM encapsulates to a ciphertext, which has a size of its own, and a
+        hybrid KEM to that ciphertext followed by an ephemeral group element.
         <code>Kem.public_key_size</code>, <code>Kem.private_key_size</code>,
         <code>Kem.encapsulated_key_size</code>, and
         <code>Kem.supports_auth</code> report these at run time.
@@ -129,6 +133,41 @@ let exporter =
           changes if the draft does. The draft prefers ML-KEM-768 and
           ML-KEM-1024 to ML-KEM-512, as a hedge against cryptanalysis that
           weakens ML-KEM without breaking it.
+        </li>
+      </ul>
+
+      <h3 id="hybrid">Hybrid KEMs</h3>
+
+      <p>
+        <code>Kem.Mlkem768_p256</code>, <code>Kem.Mlkem768_x25519</code>, and
+        <code>Kem.Mlkem1024_p384</code> are the post-quantum/traditional hybrid
+        KEMs of <code>draft-ietf-hpke-pq</code>, as
+        <a href="https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/"><code>draft-irtf-cfrg-concrete-hybrid-kems</code></a>
+        defines them. Each runs ML-KEM and an elliptic-curve exchange side by
+        side and hashes both secrets together with SHA3-256, so a message stays
+        protected as long as either half holds. <code>Kem.Mlkem768_x25519</code>
+        is X-Wing. They work in the Base and PSK modes as ML-KEM does, and
+        differ from it in what follows from the second half:
+      </p>
+
+      <ul>
+        <li>
+          <strong>A private key is a 32-byte seed.</strong> SHAKE256 expands it
+          into an ML-KEM seed and a scalar. P-256 and P-384 draw the scalar by
+          rejection sampling, which fails with negligible probability.
+        </li>
+        <li>
+          <strong>Keys and encapsulations have two halves.</strong> A public
+          key is the ML-KEM key followed by the group element, an uncompressed
+          SEC1 point or an X25519 public value; an encapsulated key is the
+          ML-KEM ciphertext followed by an ephemeral element.
+        </li>
+        <li>
+          <strong>The element is validated.</strong> A tampered ML-KEM
+          ciphertext decapsulates to an unrelated secret, but an element that
+          is not on the curve, or an X25519 value of low order, is
+          <code>Invalid_encapsulation</code>. The concrete draft leaves the
+          X25519 value unchecked; no honest peer produces one that is refused.
         </li>
       </ul>
 
@@ -223,12 +262,10 @@ let exporter =
           uncompressed SEC1 form, which is what RFC 9180 specifies.
         </li>
         <li>
-          <strong>Hybrid KEMs and SHA-3 KDFs.</strong>
-          <code>draft-ietf-hpke-pq</code> also combines ML-KEM with X25519,
-          P-256, and P-384, and defines SHAKE and TurboSHAKE KDFs. The hybrids
-          rest on CFRG drafts that are still moving, and the KDFs on the
-          one-stage key schedule of the successor standard, which belongs in
-          its <a href="#versioning">own module</a>.
+          <strong>SHA-3 KDFs.</strong>
+          <code>draft-ietf-hpke-pq</code> also defines SHAKE and TurboSHAKE
+          KDFs. They rest on the one-stage key schedule of the successor
+          standard, which belongs in its <a href="#versioning">own module</a>.
         </li>
         <li>
           <strong>Expanded ML-KEM private keys.</strong> Only the 64-byte seed

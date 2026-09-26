@@ -54,6 +54,9 @@ module Kem = struct
     | Mlkem512
     | Mlkem768
     | Mlkem1024
+    | Mlkem768_p256
+    | Mlkem768_x25519
+    | Mlkem1024_p384
 
   let to_int = function
     | P256 -> 0x0010
@@ -64,6 +67,9 @@ module Kem = struct
     | Mlkem512 -> 0x0040
     | Mlkem768 -> 0x0041
     | Mlkem1024 -> 0x0042
+    | Mlkem768_p256 -> 0x0050
+    | Mlkem1024_p384 -> 0x0051
+    | Mlkem768_x25519 -> 0x647a
 
   let of_int = function
     | 0x0010 -> Ok P256
@@ -74,6 +80,9 @@ module Kem = struct
     | 0x0040 -> Ok Mlkem512
     | 0x0041 -> Ok Mlkem768
     | 0x0042 -> Ok Mlkem1024
+    | 0x0050 -> Ok Mlkem768_p256
+    | 0x0051 -> Ok Mlkem1024_p384
+    | 0x647a -> Ok Mlkem768_x25519
     | id -> Error (Error.Unsupported_algorithm id)
 
   let pp ppf = function
@@ -85,6 +94,9 @@ module Kem = struct
     | Mlkem512 -> Format.pp_print_string ppf "ML-KEM-512"
     | Mlkem768 -> Format.pp_print_string ppf "ML-KEM-768"
     | Mlkem1024 -> Format.pp_print_string ppf "ML-KEM-1024"
+    | Mlkem768_p256 -> Format.pp_print_string ppf "MLKEM768-P256"
+    | Mlkem768_x25519 -> Format.pp_print_string ppf "MLKEM768-X25519"
+    | Mlkem1024_p384 -> Format.pp_print_string ppf "MLKEM1024-P384"
 
   let public_key_size = function
     | P256 -> 65
@@ -95,8 +107,13 @@ module Kem = struct
     | Mlkem512 -> 800
     | Mlkem768 -> 1184
     | Mlkem1024 -> 1568
+    (* A hybrid public key is the ML-KEM key followed by the group element. *)
+    | Mlkem768_p256 -> 1184 + 65
+    | Mlkem768_x25519 -> 1184 + 32
+    | Mlkem1024_p384 -> 1568 + 97
 
-  (* An ML-KEM private key is the 64-byte seed d || z of FIPS 203. *)
+  (* An ML-KEM private key is the 64-byte seed d || z of FIPS 203, and a hybrid
+     one the 32-byte seed that both halves are expanded from. *)
   let private_key_size = function
     | P256 -> 32
     | P384 -> 48
@@ -104,14 +121,19 @@ module Kem = struct
     | X25519 -> 32
     | X448 -> 56
     | Mlkem512 | Mlkem768 | Mlkem1024 -> 64
+    | Mlkem768_p256 | Mlkem768_x25519 | Mlkem1024_p384 -> 32
 
   (* A DHKEM encapsulation is an ephemeral public key. An ML-KEM one is a
-     ciphertext, whose size is not that of a key. *)
+     ciphertext, whose size is not that of a key, and a hybrid one that
+     ciphertext followed by an ephemeral group element. *)
   let encapsulated_key_size = function
     | (P256 | P384 | P521 | X25519 | X448) as kem -> public_key_size kem
     | Mlkem512 -> 768
     | Mlkem768 -> 1088
     | Mlkem1024 -> 1568
+    | Mlkem768_p256 -> 1088 + 65
+    | Mlkem768_x25519 -> 1088 + 32
+    | Mlkem1024_p384 -> 1568 + 97
 
   let secret_size = function
     | P256 -> 32
@@ -120,10 +142,13 @@ module Kem = struct
     | X25519 -> 32
     | X448 -> 64
     | Mlkem512 | Mlkem768 | Mlkem1024 -> 32
+    | Mlkem768_p256 | Mlkem768_x25519 | Mlkem1024_p384 -> 32
 
   let supports_auth = function
     | P256 | P384 | P521 | X25519 | X448 -> true
-    | Mlkem512 | Mlkem768 | Mlkem1024 -> false
+    | Mlkem512 | Mlkem768 | Mlkem1024 | Mlkem768_p256 | Mlkem768_x25519
+    | Mlkem1024_p384 ->
+        false
 end
 
 module Kdf = struct
@@ -348,7 +373,8 @@ let curve_order = function
         "01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409"
   | Kem.X25519 -> invalid_arg "X25519 has no rejection-sampling order"
   | Kem.X448 -> invalid_arg "X448 has no rejection-sampling order"
-  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 ->
+  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+  | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
       invalid_arg "ML-KEM has no rejection-sampling order"
 
 let valid_nist_scalar kem bytes =
@@ -421,14 +447,282 @@ module Mlkem512_kem = Mlkem_kem (Mlkem.Mlkem512)
 module Mlkem768_kem = Mlkem_kem (Mlkem.Mlkem768)
 module Mlkem1024_kem = Mlkem_kem (Mlkem.Mlkem1024)
 
+(* A NIST public key of the right length must be an uncompressed SEC1 point on
+   the curve. *)
+let nist_public_key ~pub_of_octets bytes =
+  if bytes.[0] <> '\004' then
+    Error
+      (Error.Invalid_public_key
+         "only canonical uncompressed SEC1 encodings are accepted")
+  else
+    Result.map_error
+      (fun error -> Error.Invalid_public_key (Util.ec_error error))
+      (Result.map (fun _ -> ()) (pub_of_octets bytes))
+
+(* A nominal group of draft-irtf-cfrg-hybrid-kems, the traditional half of a
+   PQ/T hybrid KEM, as draft-irtf-cfrg-concrete-hybrid-kems, Section 3.1,
+   instantiates it. An element is its encoding, and a scalar is kept with its
+   element [Exp(g, scalar)]. *)
+module type NOMINAL_GROUP = sig
+  type scalar
+
+  val seed_size : int
+  (** [Nseed]. *)
+
+  val element_size : int
+  (** [Nelem]. *)
+
+  val random_scalar : string -> (scalar * string) option
+  (** [RandomScalar(seed)] and [Exp(g, scalar)], or [None] when the seed holds
+      no valid scalar. *)
+
+  val check_element : string -> (unit, Error.t) result
+  (** Validates an [Nelem]-byte element received as a public key. *)
+
+  val shared_secret : scalar -> string -> (string, string) result
+  (** [ElementToSharedSecret(Exp(element, scalar))], or the class of encoding
+      that made [element] invalid. *)
+end
+
+(* The P-256 and P-384 groups. RandomScalar reads the seed as consecutive
+   candidates of [Nscalar] bytes and takes the first that is a valid scalar:
+   four for P-256, where a candidate is rejected with a probability below 2^-32,
+   and one for P-384, where it is below 2^-192. The shared secret is the X
+   coordinate, which is what mirage-crypto's exchange returns. *)
+module Nist_group
+    (Dh : Mirage_crypto_ec.Dh)
+    (Curve : sig
+      val kem : Kem.id
+      val seed_size : int
+      val pub_of_octets : string -> (unit, Mirage_crypto_ec.error) result
+    end) =
+struct
+  type scalar = Dh.secret
+
+  let seed_size = Curve.seed_size
+  let element_size = Kem.public_key_size Curve.kem
+  let scalar_size = Kem.private_key_size Curve.kem
+
+  let random_scalar seed =
+    let rec sample offset =
+      if offset + scalar_size > String.length seed then None
+      else
+        let candidate = String.sub seed offset scalar_size in
+        if valid_nist_scalar Curve.kem candidate then
+          Result.to_option (Dh.secret_of_octets ~compress:false candidate)
+        else sample (offset + scalar_size)
+    in
+    sample 0
+
+  let check_element bytes =
+    nist_public_key ~pub_of_octets:Curve.pub_of_octets bytes
+
+  let shared_secret scalar element =
+    if element.[0] <> '\004' then
+      Error "only canonical uncompressed SEC1 encodings are accepted"
+    else Result.map_error Util.ec_error (Dh.key_exchange scalar element)
+end
+
+module P256_group =
+  Nist_group
+    (Mirage_crypto_ec.P256.Dh)
+    (struct
+      let kem = Kem.P256
+      let seed_size = 128
+
+      let pub_of_octets bytes =
+        Result.map ignore (Mirage_crypto_ec.P256.Dsa.pub_of_octets bytes)
+    end)
+
+module P384_group =
+  Nist_group
+    (Mirage_crypto_ec.P384.Dh)
+    (struct
+      let kem = Kem.P384
+      let seed_size = 48
+
+      let pub_of_octets bytes =
+        Result.map ignore (Mirage_crypto_ec.P384.Dsa.pub_of_octets bytes)
+    end)
+
+(* The Curve25519 group: RandomScalar is the identity, and the shared secret is
+   the X25519 output itself. Every 32-byte string is an element. Unlike
+   draft-irtf-cfrg-concrete-hybrid-kems, which leaves the output unchecked, an
+   exchange that yields the all-zero value, a low-order element, fails, as it
+   does for DHKEM(X25519): see the interface. *)
+module X25519_group = struct
+  type scalar = Mirage_crypto_ec.X25519.secret
+
+  let seed_size = 32
+  let element_size = 32
+
+  let random_scalar seed =
+    Result.to_option (Mirage_crypto_ec.X25519.secret_of_octets seed)
+
+  let check_element _ = Ok ()
+
+  let shared_secret scalar element =
+    Result.map_error Util.ec_error
+      (Mirage_crypto_ec.X25519.key_exchange scalar element)
+end
+
+(* A PQ/T hybrid KEM of draft-ietf-hpke-pq, Section 4: the CG framework of
+   draft-irtf-cfrg-hybrid-kems over ML-KEM and a nominal group, with SHAKE256 as
+   the PRG and SHA3-256 as the KDF, as draft-irtf-cfrg-concrete-hybrid-kems,
+   Section 4, instantiates it. The private key is a 32-byte seed. *)
+module Hybrid_kem
+    (M : MLKEM)
+    (Group : NOMINAL_GROUP)
+    (Params : sig
+      val kem : Kem.id
+      val pq : Kem.id
+      val label : string
+    end) =
+struct
+  module Pq = Mlkem_kem (M)
+
+  let pq_public_size = Kem.public_key_size Params.pq
+  let pq_ciphertext_size = Kem.encapsulated_key_size Params.pq
+
+  (* The ML-KEM encapsulation key is parsed and kept for the reason given at
+     [public_material]; the element is kept as bytes, which is how the combiner
+     takes it. *)
+  type public = { pq_public : M.encapsulation_key; element : string }
+
+  type secret = {
+    pq_secret : M.decapsulation_key;
+    scalar : Group.scalar;
+    own_element : string;
+  }
+
+  (* Lengths are checked by the caller. *)
+  let public_key bytes =
+    let* pq_public = Pq.public_key (String.sub bytes 0 pq_public_size) in
+    let element = String.sub bytes pq_public_size Group.element_size in
+    let* () = Group.check_element element in
+    Ok { pq_public; element }
+
+  (* expandDecapsKey: SHAKE256 stretches the seed to an ML-KEM seed d || z and a
+     group seed. A seed can fail only by rejection sampling, with negligible
+     probability. *)
+  let private_key seed =
+    let pq_seed_size = Kem.private_key_size Params.pq in
+    let expanded =
+      Mlkem.Fips202.shake256
+        ~output_length:(pq_seed_size + Group.seed_size)
+        seed
+    in
+    match
+      Group.random_scalar (String.sub expanded pq_seed_size Group.seed_size)
+    with
+    | None -> Error (Error.Invalid_private_key "the seed yields no scalar")
+    | Some (scalar, own_element) ->
+        let* pq_secret, pq_public, pq_bytes =
+          Pq.private_key (String.sub expanded 0 pq_seed_size)
+        in
+        Ok
+          ( { pq_secret; scalar; own_element },
+            { pq_public; element = own_element },
+            pq_bytes ^ own_element )
+
+  (* The C2PRI combiner of draft-irtf-cfrg-hybrid-kems. It leaves out the ML-KEM
+     ciphertext and key, which ML-KEM itself binds. *)
+  let combine ~pq_secret ~group_secret ~group_ciphertext ~element =
+    Digestif.SHA3_256.(
+      to_raw_string
+        (digest_string
+           (pq_secret ^ group_secret ^ group_ciphertext ^ element ^ Params.label)))
+
+  (* EncapsDerand takes the 32 bytes of ML-KEM randomness first and then the
+     ephemeral group seed, so an encapsulation draws both at once in that order.
+     A seed holds no valid scalar with negligible probability, and is then drawn
+     again. *)
+  let encap ~random public =
+    let rec attempt remaining =
+      let randomness = random (32 + Group.seed_size) in
+      match Group.random_scalar (String.sub randomness 32 Group.seed_size) with
+      | None when remaining > 1 -> attempt (remaining - 1)
+      | None ->
+          Error (Error.Internal_error "no ephemeral scalar could be sampled")
+      | Some (ephemeral, group_ciphertext) ->
+          let* group_secret =
+            Result.map_error
+              (fun reason -> Error.Invalid_public_key reason)
+              (Group.shared_secret ephemeral public.element)
+          in
+          let pq_secret, pq_ciphertext =
+            Pq.encap
+              ~random:(fun _ -> String.sub randomness 0 32)
+              public.pq_public
+          in
+          Ok
+            ( combine ~pq_secret ~group_secret ~group_ciphertext
+                ~element:public.element,
+              pq_ciphertext ^ group_ciphertext )
+    in
+    attempt 8
+
+  (* As for ML-KEM alone, a tampered ML-KEM ciphertext decapsulates to an
+     unrelated secret, but an element that is not valid fails. *)
+  let decap secret encapsulated_key =
+    if String.length encapsulated_key <> Kem.encapsulated_key_size Params.kem
+    then Error (Error.Invalid_encapsulation "wrong encoded length")
+    else
+      let group_ciphertext =
+        String.sub encapsulated_key pq_ciphertext_size Group.element_size
+      in
+      let* group_secret =
+        Result.map_error
+          (fun reason -> Error.Invalid_encapsulation reason)
+          (Group.shared_secret secret.scalar group_ciphertext)
+      in
+      let* pq_secret =
+        Pq.decap secret.pq_secret
+          (String.sub encapsulated_key 0 pq_ciphertext_size)
+      in
+      Ok
+        (combine ~pq_secret ~group_secret ~group_ciphertext
+           ~element:secret.own_element)
+end
+
+module Mlkem768_p256_kem =
+  Hybrid_kem (Mlkem.Mlkem768) (P256_group)
+    (struct
+      let kem = Kem.Mlkem768_p256
+      let pq = Kem.Mlkem768
+      let label = "MLKEM768-P256"
+    end)
+
+module Mlkem768_x25519_kem =
+  Hybrid_kem (Mlkem.Mlkem768) (X25519_group)
+    (struct
+      let kem = Kem.Mlkem768_x25519
+      let pq = Kem.Mlkem768
+
+      (* X-Wing's label, "\\.//^\\". *)
+      let label = "\x5c\x2e\x2f\x2f\x5e\x5c"
+    end)
+
+module Mlkem1024_p384_kem =
+  Hybrid_kem (Mlkem.Mlkem1024) (P384_group)
+    (struct
+      let kem = Kem.Mlkem1024_p384
+      let pq = Kem.Mlkem1024
+      let label = "MLKEM1024-P384"
+    end)
+
 (* A DHKEM public key is validated when it is parsed and then used as bytes.
    Parsing an ML-KEM encapsulation key expands its public matrix, which every
-   encapsulation would otherwise repeat, so that key is parsed once and kept. *)
+   encapsulation would otherwise repeat, so that key is parsed once and kept, on
+   its own or as the half of a hybrid key. *)
 type public_material =
   | Dh_public
   | Mlkem512_public of Mlkem.Mlkem512.encapsulation_key
   | Mlkem768_public of Mlkem.Mlkem768.encapsulation_key
   | Mlkem1024_public of Mlkem.Mlkem1024.encapsulation_key
+  | Mlkem768_p256_public of Mlkem768_p256_kem.public
+  | Mlkem768_x25519_public of Mlkem768_x25519_kem.public
+  | Mlkem1024_p384_public of Mlkem1024_p384_kem.public
 
 let parse_public_bytes kem bytes =
   if String.length bytes <> Kem.public_key_size kem then
@@ -437,38 +731,20 @@ let parse_public_bytes kem bytes =
     match kem with
     | Kem.X25519 | Kem.X448 -> Ok Dh_public
     | Kem.P256 ->
-        if bytes.[0] <> '\004' then
-          Error
-            (Error.Invalid_public_key
-               "only canonical uncompressed SEC1 encodings are accepted")
-        else
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Result.map
-               (fun _ -> Dh_public)
-               (Mirage_crypto_ec.P256.Dsa.pub_of_octets bytes))
+        Result.map
+          (fun () -> Dh_public)
+          (nist_public_key
+             ~pub_of_octets:Mirage_crypto_ec.P256.Dsa.pub_of_octets bytes)
     | Kem.P384 ->
-        if bytes.[0] <> '\004' then
-          Error
-            (Error.Invalid_public_key
-               "only canonical uncompressed SEC1 encodings are accepted")
-        else
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Result.map
-               (fun _ -> Dh_public)
-               (Mirage_crypto_ec.P384.Dsa.pub_of_octets bytes))
+        Result.map
+          (fun () -> Dh_public)
+          (nist_public_key
+             ~pub_of_octets:Mirage_crypto_ec.P384.Dsa.pub_of_octets bytes)
     | Kem.P521 ->
-        if bytes.[0] <> '\004' then
-          Error
-            (Error.Invalid_public_key
-               "only canonical uncompressed SEC1 encodings are accepted")
-        else
-          Result.map_error
-            (fun error -> Error.Invalid_public_key (Util.ec_error error))
-            (Result.map
-               (fun _ -> Dh_public)
-               (Mirage_crypto_ec.P521.Dsa.pub_of_octets bytes))
+        Result.map
+          (fun () -> Dh_public)
+          (nist_public_key
+             ~pub_of_octets:Mirage_crypto_ec.P521.Dsa.pub_of_octets bytes)
     (* The modulus check of FIPS 203, Section 7.2. *)
     | Kem.Mlkem512 ->
         Result.map
@@ -482,6 +758,19 @@ let parse_public_bytes kem bytes =
         Result.map
           (fun key -> Mlkem1024_public key)
           (Mlkem1024_kem.public_key bytes)
+    (* The ML-KEM half as above, and the element as a key of its group. *)
+    | Kem.Mlkem768_p256 ->
+        Result.map
+          (fun key -> Mlkem768_p256_public key)
+          (Mlkem768_p256_kem.public_key bytes)
+    | Kem.Mlkem768_x25519 ->
+        Result.map
+          (fun key -> Mlkem768_x25519_public key)
+          (Mlkem768_x25519_kem.public_key bytes)
+    | Kem.Mlkem1024_p384 ->
+        Result.map
+          (fun key -> Mlkem1024_p384_public key)
+          (Mlkem1024_p384_kem.public_key bytes)
 
 module Public_key = struct
   type t = { kem : Kem.id; bytes : string; material : public_material }
@@ -495,9 +784,9 @@ module Public_key = struct
 end
 
 (* Parsing a secret derives its public key, a scalar multiplication that for
-   X25519 and X448 costs as much as the exchange itself, and for ML-KEM the
-   whole of key generation. A secret is therefore parsed once, with its key, and
-   kept. *)
+   X25519 and X448 costs as much as the exchange itself, and for ML-KEM and the
+   hybrids the whole of key generation. A secret is therefore parsed once, with
+   its key, and kept. *)
 type kem_secret =
   | P256_secret of Mirage_crypto_ec.P256.Dh.secret
   | P384_secret of Mirage_crypto_ec.P384.Dh.secret
@@ -507,6 +796,9 @@ type kem_secret =
   | Mlkem512_secret of Mlkem.Mlkem512.decapsulation_key
   | Mlkem768_secret of Mlkem.Mlkem768.decapsulation_key
   | Mlkem1024_secret of Mlkem.Mlkem1024.decapsulation_key
+  | Mlkem768_p256_secret of Mlkem768_p256_kem.secret
+  | Mlkem768_x25519_secret of Mlkem768_x25519_kem.secret
+  | Mlkem1024_p384_secret of Mlkem1024_p384_kem.secret
 
 let secret_and_public kem bytes =
   (* A Diffie-Hellman secret yields the encoding of its public key, which is
@@ -518,7 +810,8 @@ let secret_and_public kem bytes =
         let* public_key = Public_key.of_bytes ~kem public in
         Ok (wrap secret, public_key)
   in
-  (* An ML-KEM secret yields the encapsulation key itself, already parsed. *)
+  (* An ML-KEM or hybrid secret yields the encapsulation key itself, already
+     parsed. *)
   let mlkem wrap_secret wrap_public parsed =
     let* secret, public, bytes = parsed in
     Ok
@@ -561,6 +854,21 @@ let secret_and_public kem bytes =
         (fun secret -> Mlkem1024_secret secret)
         (fun public -> Mlkem1024_public public)
         (Mlkem1024_kem.private_key bytes)
+  | Kem.Mlkem768_p256 ->
+      mlkem
+        (fun secret -> Mlkem768_p256_secret secret)
+        (fun public -> Mlkem768_p256_public public)
+        (Mlkem768_p256_kem.private_key bytes)
+  | Kem.Mlkem768_x25519 ->
+      mlkem
+        (fun secret -> Mlkem768_x25519_secret secret)
+        (fun public -> Mlkem768_x25519_public public)
+        (Mlkem768_x25519_kem.private_key bytes)
+  | Kem.Mlkem1024_p384 ->
+      mlkem
+        (fun secret -> Mlkem1024_p384_secret secret)
+        (fun public -> Mlkem1024_p384_public public)
+        (Mlkem1024_p384_kem.private_key bytes)
 
 module Private_key = struct
   type t = {
@@ -583,8 +891,11 @@ module Private_key = struct
             else
               Error
                 (Error.Invalid_private_key "scalar is outside the valid range")
-        (* Every string of the right length is an ML-KEM seed. *)
-        | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 -> Ok bytes
+        (* Every string of the right length is an ML-KEM seed, and every one but
+           a negligible fraction a hybrid seed. *)
+        | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+        | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
+            Ok bytes
       in
       let* secret, public_key = secret_and_public kem bytes in
       Ok { kem; bytes; secret; public_key }
@@ -657,13 +968,14 @@ module Labeled_kdf = struct
       ~info:(Util.i2osp2 length ^ version_label ^ suite_id ^ label ^ info)
       length
 
-  (* The KDF of a DHKEM. ML-KEM has none: what it derives, it derives with
-     [kem_derive_shake256]. *)
+  (* The KDF of a DHKEM. ML-KEM and the hybrids have none: what they derive,
+     they derive with [kem_derive_shake256]. *)
   let kem_kdf = function
     | Kem.P256 | Kem.X25519 -> Kdf.Hkdf_sha256
     | Kem.P384 -> Kdf.Hkdf_sha384
     | Kem.P521 | Kem.X448 -> Kdf.Hkdf_sha512
-    | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 ->
+    | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+    | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
         invalid_arg "ML-KEM has no KEM KDF"
 
   let kem_extract kem ~salt ~label ikm =
@@ -676,7 +988,8 @@ module Labeled_kdf = struct
   (* LabeledDerive of draft-ietf-hpke-hpke, Section 4.4, over the one-stage
      SHAKE256 KDF of draft-ietf-hpke-pq, Section 5. Unlike the two-stage
      functions above it puts the input first and frames the label with its
-     length. SHAKE256 is the one ML-KEM itself runs on. *)
+     length. SHAKE256 is the one ML-KEM itself runs on, and the hybrids use it
+     too. *)
   let kem_derive_shake256 kem ~label ~context ikm length =
     Mlkem.Fips202.shake256 ~output_length:length
       (ikm ^ version_label ^ kem_suite_id kem
@@ -702,7 +1015,10 @@ let derive_key_pair_inner kem ~ikm =
     | Kem.X25519 -> Ok (Util.normalize_x25519 (secret ()))
     | Kem.X448 -> Ok (Util.normalize_x448 (secret ()))
     (* draft-ietf-hpke-pq, Section 3: the seed is derived in one step. *)
-    | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 ->
+    (* draft-ietf-hpke-pq, Section 4: so is the seed of a hybrid, which then
+       takes the negligible chance that it holds no scalar. *)
+    | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+    | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
         Ok
           (Labeled_kdf.kem_derive_shake256 kem ~label:"DeriveKeyPair"
              ~context:"" ikm (Kem.private_key_size kem))
@@ -720,7 +1036,13 @@ let derive_key_pair_inner kem ~ikm =
         sample 0
   in
   let* secret = secret_result in
-  let* private_key = Private_key.of_bytes ~kem secret in
+  let* private_key =
+    match (kem, Private_key.of_bytes ~kem secret) with
+    | ( (Kem.Mlkem768_p256 | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384),
+        Error (Error.Invalid_private_key _) ) ->
+        Error Error.Derive_key_pair_failure
+    | _, result -> result
+  in
   Ok (private_key, Private_key.public_key private_key)
 
 let derive_key_pair kem ~ikm =
@@ -745,6 +1067,22 @@ let generate_key_pair ~rng kem =
       let seed = Mirage_crypto_rng.generate ~g:rng (Kem.private_key_size kem) in
       let* private_key = Private_key.of_bytes ~kem seed in
       Ok (private_key, Private_key.public_key private_key)
+  (* draft-ietf-hpke-pq, Section 4: the same, with a 32-byte seed that is drawn
+     again in the negligible case that it holds no scalar. *)
+  | Kem.Mlkem768_p256 | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
+      let rec seeded attempts =
+        let seed =
+          Mirage_crypto_rng.generate ~g:rng (Kem.private_key_size kem)
+        in
+        match Private_key.of_bytes ~kem seed with
+        | Ok private_key -> Ok (private_key, Private_key.public_key private_key)
+        | Error (Error.Invalid_private_key _) when attempts > 1 ->
+            seeded (attempts - 1)
+        | Error (Error.Invalid_private_key _) ->
+            Error Error.Derive_key_pair_failure
+        | Error _ as error -> error
+      in
+      seeded 8
 
 let dh private_key public_key =
   if Private_key.kem private_key <> Public_key.kem public_key then
@@ -766,12 +1104,18 @@ let dh private_key public_key =
         of_exchange (Mirage_crypto_ec.X25519.key_exchange secret public)
     | X448_secret secret ->
         of_exchange (Curve448.X448.key_exchange secret public)
-    (* Only a caller-chosen ephemeral key gets here: ML-KEM encapsulates without
-       one, and its authenticated modes are rejected earlier. *)
+    (* Only a caller-chosen ephemeral key gets here: ML-KEM and the hybrids
+       encapsulate without one, and their authenticated modes are rejected
+       earlier. *)
     | Mlkem512_secret _ | Mlkem768_secret _ | Mlkem1024_secret _ ->
         Error
           (Error.Invalid_private_key
              "ML-KEM keys cannot perform a Diffie-Hellman exchange")
+    | Mlkem768_p256_secret _ | Mlkem768_x25519_secret _
+    | Mlkem1024_p384_secret _ ->
+        Error
+          (Error.Invalid_private_key
+             "hybrid KEM keys cannot perform a Diffie-Hellman exchange")
 
 let extract_and_expand kem ~dh ~kem_context =
   let eae_prk = Labeled_kdf.kem_extract kem ~salt:"" ~label:"eae_prk" dh in
@@ -802,10 +1146,11 @@ let encap_with ~ephemeral ~sender recipient =
     ( extract_and_expand kem ~dh:(ephemeral_dh ^ static_dh) ~kem_context,
       encapsulated_key )
 
-(* ML-KEM has no AuthEncap or AuthDecap (draft-ietf-hpke-pq, Section 7.2).
-   [Rfc9180] rejects its authenticated modes before it gets here. Were that
-   check ever lost, this one keeps a sender key from being silently dropped,
-   which would turn an authenticated mode into an unauthenticated one. *)
+(* ML-KEM and the hybrids have no AuthEncap or AuthDecap (draft-ietf-hpke-pq,
+   Section 7.2). [Rfc9180] rejects its authenticated modes before it gets here.
+   Were that check ever lost, this one keeps a sender key from being silently
+   dropped, which would turn an authenticated mode into an unauthenticated
+   one. *)
 let mlkem_without_sender = function
   | None -> Ok ()
   | Some _ -> Error Error.Unsupported_mode
@@ -825,6 +1170,15 @@ let encap ~rng ~sender recipient =
   | Mlkem1024_public public ->
       let* () = mlkem_without_sender sender in
       Ok (Mlkem1024_kem.encap ~random public)
+  | Mlkem768_p256_public public ->
+      let* () = mlkem_without_sender sender in
+      Mlkem768_p256_kem.encap ~random public
+  | Mlkem768_x25519_public public ->
+      let* () = mlkem_without_sender sender in
+      Mlkem768_x25519_kem.encap ~random public
+  | Mlkem1024_p384_public public ->
+      let* () = mlkem_without_sender sender in
+      Mlkem1024_p384_kem.encap ~random public
 
 let dh_decap recipient ~sender ~encapsulated_key =
   let kem = Private_key.kem recipient in
@@ -873,6 +1227,15 @@ let decap recipient ~sender ~encapsulated_key =
   | Mlkem1024_secret secret ->
       let* () = mlkem_without_sender sender in
       Mlkem1024_kem.decap secret encapsulated_key
+  | Mlkem768_p256_secret secret ->
+      let* () = mlkem_without_sender sender in
+      Mlkem768_p256_kem.decap secret encapsulated_key
+  | Mlkem768_x25519_secret secret ->
+      let* () = mlkem_without_sender sender in
+      Mlkem768_x25519_kem.decap secret encapsulated_key
+  | Mlkem1024_p384_secret secret ->
+      let* () = mlkem_without_sender sender in
+      Mlkem1024_p384_kem.decap secret encapsulated_key
 
 module Rfc9180 = struct
   type encryption_state = {

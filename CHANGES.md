@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+Adds the post-quantum/traditional hybrid KEMs. `Kem.id` gains constructors,
+which exhaustive matches must handle.
+
+- Add `Kem.Mlkem768_p256` (MLKEM768-P256, `0x0050`), `Kem.Mlkem768_x25519`
+  (MLKEM768-X25519, or X-Wing, `0x647a`), and `Kem.Mlkem1024_p384`
+  (MLKEM1024-P384, `0x0051`), the hybrid KEMs of `draft-ietf-hpke-pq-05` as
+  `draft-irtf-cfrg-concrete-hybrid-kems` defines them: ML-KEM and an
+  elliptic-curve group, combined with SHA3-256 so that the shared secret holds
+  as long as either half does. They work in the Base and PSK modes, where a
+  suite with an HKDF runs the RFC 9180 key schedule unchanged, and like ML-KEM
+  have no Auth or AuthPSK mode. A private key is a 32-byte seed, expanded with
+  SHAKE256 into an ML-KEM seed and a scalar, and `derive_key_pair` derives it
+  with SHAKE256 as for ML-KEM. A public key is the ML-KEM key followed by the
+  group element, and both halves are validated when it is parsed, the X25519
+  one when it is used. An encapsulated key is the ML-KEM ciphertext followed by
+  an ephemeral element. A tampered ciphertext decapsulates to an unrelated
+  secret, as for ML-KEM, but an element that is off the curve, or an X25519
+  value of low order, is `Invalid_encapsulation`.
+- The hybrid combiner is Digestif's SHA3-256 and the key expansion the
+  SHAKE256 of `mlkem`, both existing dependencies, so the library still
+  implements no primitive of its own and gains no dependency.
+- Grow the pinned `draft-ietf-hpke-pq-05` corpus from three vectors to six:
+  one for each hybrid, in full. The two hybrid vectors whose KDF this library
+  lacks join the ML-KEM-1024 one as KEM-only vectors, for key derivation and
+  encapsulation.
+- `hpke.for_testing` refuses a hybrid suite as it does an ML-KEM one.
+
 ## 0.3.0 — 2026-09-25
 
 Adds X448, the RFC 9180 Auth and AuthPSK modes, and the post-quantum ML-KEM

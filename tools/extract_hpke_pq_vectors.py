@@ -18,7 +18,10 @@ SOURCE_URL = (
     f"{SOURCE_COMMIT}/test-vectors.json"
 )
 SUPPORTED_MODES = {0, 1}
-SUPPORTED_KEMS = {0x0040, 0x0041, 0x0042}
+MLKEM_KEMS = {0x0040, 0x0041, 0x0042}
+# MLKEM768-P256, MLKEM1024-P384, and MLKEM768-X25519.
+HYBRID_KEMS = {0x0050, 0x0051, 0x647A}
+SUPPORTED_KEMS = MLKEM_KEMS | HYBRID_KEMS
 SUPPORTED_KDFS = {0x0001, 0x0002, 0x0003}
 SUPPORTED_AEADS = {0x0001, 0x0002, 0x0003, 0xFFFF}
 COPIED_FIELDS = (
@@ -45,9 +48,10 @@ COPIED_FIELDS = (
     "encryptions",
     "exports",
 )
-# An ML-KEM key pair and encapsulation do not depend on the rest of the suite.
-# A vector whose KDF is not supported is therefore still a known answer for
-# DeriveKeyPair and for the encapsulation, and keeps the fields of those alone.
+# An ML-KEM or hybrid key pair and encapsulation do not depend on the rest of
+# the suite. A vector whose KDF is not supported is therefore still a known
+# answer for DeriveKeyPair and for the encapsulation, and keeps the fields of
+# those alone.
 KEM_ONLY_FIELDS = ("kem_id", "kdf_id", "ikmE", "ikmR", "skRm", "pkRm", "enc")
 
 
@@ -83,18 +87,20 @@ def main() -> None:
     vectors = [
         reduce_vector(vector, COPIED_FIELDS) for vector in source if selected(vector)
     ]
-    if len(vectors) != 3:
-        raise SystemExit(f"expected 3 supported vectors, found {len(vectors)}")
+    if len(vectors) != 6:
+        raise SystemExit(f"expected 6 supported vectors, found {len(vectors)}")
     if {vector["kem_id"] for vector in vectors} != SUPPORTED_KEMS:
-        raise SystemExit("expected a supported vector for every ML-KEM parameter set")
+        raise SystemExit("expected a supported vector for every supported KEM")
 
     kem_only_vectors = [
         reduce_vector(vector, KEM_ONLY_FIELDS)
         for vector in source
         if supported_kem(vector) and not selected(vector)
     ]
-    if len(kem_only_vectors) != 1:
-        raise SystemExit(f"expected 1 KEM-only vector, found {len(kem_only_vectors)}")
+    if len(kem_only_vectors) != 3:
+        raise SystemExit(f"expected 3 KEM-only vectors, found {len(kem_only_vectors)}")
+    if {vector["kem_id"] for vector in kem_only_vectors} != {0x0042, 0x0050, 0x647A}:
+        raise SystemExit("expected KEM-only vectors for ML-KEM-1024 and two hybrids")
 
     output = {
         "source": {

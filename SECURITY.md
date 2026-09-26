@@ -48,10 +48,21 @@ disclosure after a fix is available.
   pure ML-KEM and not a hybrid with a Diffie-Hellman KEM, so nothing else
   protects a message if ML-KEM or its implementation fails. Prefer ML-KEM-768
   or ML-KEM-1024 to ML-KEM-512, as the draft does.
-- A forged ML-KEM encapsulated key of the right length does not fail to
-  decapsulate; it yields a secret unrelated to the sender's. A receiver that
-  opens messages sees `Open_error`. An export-only receiver sees no error at
-  all, and must confirm an exported secret with its peer before relying on it.
+- `Kem.Mlkem768_p256`, `Kem.Mlkem768_x25519`, and `Kem.Mlkem1024_p384` are the
+  post-quantum/traditional hybrids of the same draft. They take ML-KEM from
+  `mlkem`, and P-256, P-384, and X25519 from Mirage Crypto, and hold as long
+  as either half does: a failure of ML-KEM or of `mlkem` alone leaves the
+  elliptic-curve half protecting the message against an attacker without a
+  quantum computer. The combiner, SHA3-256, is Digestif's. They also follow
+  `draft-irtf-cfrg-concrete-hybrid-kems`, another draft, so the same caution
+  about `derive_key_pair` applies. Unlike that draft, an X25519 exchange that
+  yields the all-zero value is refused, which only input no honest peer
+  produces can cause.
+- A forged ML-KEM or hybrid encapsulated key of the right length, apart from
+  an invalid hybrid group element, does not fail to decapsulate; it yields a
+  secret unrelated to the sender's. A receiver that opens messages sees
+  `Open_error`. An export-only receiver sees no error at all, and must confirm
+  an exported secret with its peer before relying on it.
 - A sender or receiver context is stateful. Serialize access at the application
   layer. `Concurrent_use` means no cryptography was performed by that call.
 - Treat `Open_error` uniformly at protocol boundaries. Do not build an oracle

@@ -128,6 +128,13 @@ The following are assumed, not proved:
   * The mirage-crypto block-count checks are transcribed from its source, as
     are eqaf's `compare_be` and the NIST point checks. The conformance test
     exercises them where it can.
+* **The PQ/T hybrid KEMs.** `Kem.Mlkem768_p256`, `Kem.Mlkem768_x25519` and
+  `Kem.Mlkem1024_p384` came after the mirrors and are not yet transcribed. The
+  theorems above cover the eight KEMs of `KemId.all`, and nothing about the
+  hybrids: their registry entries, `Hybrid_kem`, or their cases of the setup
+  functions. The conformance vectors never name them, so they still pass. The
+  hybrids are checked by the known-answer vectors of `draft-ietf-hpke-pq-05`,
+  the unit tests and the fuzzer instead.
 * **The mirrors.** They are hand-written transcriptions of the OCaml.
   `conformance/` checks them on concrete inputs, not symbolically.
   `Sys.max_string_length` and the placement of poll points (read from

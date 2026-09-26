@@ -27,6 +27,10 @@ let kem_name = function
   | Mlkem512 -> "mlkem512"
   | Mlkem768 -> "mlkem768"
   | Mlkem1024 -> "mlkem1024"
+  (* The Lean mirrors do not model the hybrid KEMs, so no vector names them. *)
+  | Mlkem768_p256 -> "mlkem768p256"
+  | Mlkem768_x25519 -> "mlkem768x25519"
+  | Mlkem1024_p384 -> "mlkem1024p384"
 
 let kdf_name = function
   | H.Kdf.Hkdf_sha256 -> "sha256"

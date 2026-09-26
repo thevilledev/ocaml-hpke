@@ -95,7 +95,10 @@
         then reports nothing, and the failure surfaces as
         <code>Open_error</code> at the first open. An export-only receiver
         never opens anything, so it sees no error at all: it must confirm an
-        exported secret with its peer before relying on it.
+        exported secret with its peer before relying on it. A hybrid KEM does
+        the same for its ML-KEM half, but refuses an ephemeral group element
+        that is invalid with <code>Invalid_encapsulation</code>, which the
+        single-shot opens normalize as they do any other.
       </p>
 
       <h2 id="limits">What it does not defend against</h2>
@@ -107,7 +110,7 @@
         <li><strong>PSK entropy.</strong> <code>Psk.create</code> enforces a 32-byte minimum. No length check can establish that a secret is unpredictable.</li>
         <li><strong>Key-compromise impersonation.</strong> The Auth and AuthPSK modes authenticate the sender, but not as a signature does. Whoever holds the recipient's private key, and in AuthPSK mode the PSK as well, can seal a message that opens as coming from any sender (RFC 9180, Section 9.1.1), so a recipient also cannot prove to a third party who sent a message. Where either matters, sign the encapsulated key and ciphertext as well.</li>
         <li><strong>Primitive side channels.</strong> The timing behavior of the curve, hash, and AEAD implementations is Mirage Crypto's and Digestif's responsibility, not this library's. ML-KEM, and the SHAKE256 that derives its key pairs, are <a href="https://github.com/thevilledev/ocaml-pq/blob/main/SECURITY.md"><code>mlkem</code>'s</a>, which avoids secret-dependent branches in its source and does not claim that the compiled code runs in constant time.</li>
-        <li><strong>A break of ML-KEM.</strong> The ML-KEM suites are pure ML-KEM, not a hybrid with a Diffie-Hellman KEM. They protect a message against an attacker who records it now and gets a quantum computer later, which the Diffie-Hellman suites do not. But ML-KEM and its implementations are young, and if either fails, nothing else protects the message. The hybrid KEMs of <code>draft-ietf-hpke-pq</code>, which hold as long as one of their halves does, are not implemented.</li>
+        <li><strong>A break of ML-KEM.</strong> The ML-KEM suites are pure ML-KEM, not a hybrid with a Diffie-Hellman KEM. They protect a message against an attacker who records it now and gets a quantum computer later, which the Diffie-Hellman suites do not. But ML-KEM and its implementations are young, and if either fails, nothing else protects the message. The hybrid KEMs of <code>draft-ietf-hpke-pq</code> hold as long as one of their halves does: with them, a failure of ML-KEM or of <code>mlkem</code> still leaves the elliptic-curve exchange protecting the message against an attacker without a quantum computer.</li>
         <li><strong>Key management.</strong> Storage, distribution, rotation, and revocation are out of scope. So is transport framing.</li>
       </ul>
 
@@ -134,11 +137,11 @@
             </tr>
             <tr>
               <td><a href="https://datatracker.ietf.org/doc/draft-ietf-hpke-pq/"><code>draft-ietf-hpke-pq-05</code></a>, pinned at HPKE working-group commit <code>6433c8f</code></td>
-              <td>Every ML-KEM vector that uses an HKDF: ML-KEM-512 and ML-KEM-768 with HKDF-SHA256 and AES-128-GCM, and ML-KEM-1024 with HKDF-SHA384 and AES-256-GCM, in Base mode. Each checks key derivation, the encapsulation from fixed randomness, ten ciphertexts, and five exports. The remaining ML-KEM vector uses a KDF outside this library and is replayed as far as the KEM goes: key derivation and encapsulation.</td>
+              <td>Every ML-KEM and hybrid vector that uses an HKDF: ML-KEM-512 and ML-KEM-768 with HKDF-SHA256 and AES-128-GCM, ML-KEM-1024 with HKDF-SHA384 and AES-256-GCM, MLKEM768-P256 with HKDF-SHA256 and AES-128-GCM, MLKEM768-X25519 with HKDF-SHA256 and ChaCha20-Poly1305, and MLKEM1024-P384 with HKDF-SHA384 and AES-256-GCM, in Base mode. Each checks key derivation, the encapsulation from fixed randomness, ten ciphertexts, and five exports. The remaining ML-KEM and hybrid vectors use a KDF outside this library and are replayed as far as the KEM goes: key derivation and encapsulation.</td>
             </tr>
             <tr>
               <td>OpenSSL SHAKE256</td>
-              <td>Known answers for ML-KEM key derivation from an empty and a multi-block input, which the draft's vectors do not cover.</td>
+              <td>Known answers for ML-KEM and hybrid key derivation from an empty and a multi-block input, which the draft's vectors do not cover.</td>
             </tr>
             <tr>
               <td>Go 1.26.5 standard-library <code>crypto/hpke</code></td>
@@ -182,7 +185,7 @@
         <li>Treat <code>Open_error</code> uniformly at protocol boundaries. Do not build an oracle by translating lower-level setup errors into distinguishable responses.</li>
         <li>Do not log private-key or PSK byte strings. The public API intentionally offers no secret printers or equality helpers.</li>
         <li>Assume secrets may persist in memory after use, and design retention accordingly.</li>
-        <li>The ML-KEM KEMs follow <code>draft-ietf-hpke-pq</code>, which is not yet an RFC, and come from <code>mlkem</code>, which is unaudited and does not guarantee constant-time execution. Prefer ML-KEM-768 or ML-KEM-1024 to ML-KEM-512, as the draft does. Keys derived with <code>derive_key_pair</code> would change if the draft's derivation did, so store the private key it returns, not only the input it was derived from.</li>
+        <li>The ML-KEM and hybrid KEMs follow <code>draft-ietf-hpke-pq</code>, which is not yet an RFC, and come from <code>mlkem</code>, which is unaudited and does not guarantee constant-time execution; the hybrids also follow <code>draft-irtf-cfrg-concrete-hybrid-kems</code>, and take their elliptic-curve half from Mirage Crypto. Prefer ML-KEM-768 or ML-KEM-1024 to ML-KEM-512, as the draft does. Keys derived with <code>derive_key_pair</code> would change if the draft's derivation did, so store the private key it returns, not only the input it was derived from.</li>
       </ul>
 
       <h2 id="reporting">Reporting a vulnerability</h2>

@@ -5,6 +5,8 @@
 Base, PSK, Auth, and AuthPSK modes under the explicitly versioned
 `Hpke.Rfc9180` module and delegates elliptic-curve, ML-KEM, hash, and AEAD
 primitives to Mirage Crypto, `curve448`, `mlkem`, Digestif, and `kdf`.
+Post-quantum ML-KEM and ML-KEM/elliptic-curve hybrid KEMs such as X-Wing are
+supported.
 
 The project aims to provide a maintained, packaged, and idiomatic OCaml HPKE
 library.
@@ -26,16 +28,17 @@ Usage, ciphersuites, the security model, and development notes:
 
 | Component | Algorithms |
 | --- | --- |
-| KEM | P-256, P-384, P-521, X25519, X448 DHKEM; ML-KEM-512, ML-KEM-768, ML-KEM-1024 |
+| KEM | P-256, P-384, P-521, X25519, X448 DHKEM; ML-KEM-512, ML-KEM-768, ML-KEM-1024; MLKEM768-P256, MLKEM768-X25519 (X-Wing), MLKEM1024-P384 |
 | KDF | HKDF-SHA-256, HKDF-SHA-384, HKDF-SHA-512 |
 | AEAD | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, export-only |
-| Modes | RFC 9180 Base, PSK, Auth, and AuthPSK; ML-KEM has the first two |
+| Modes | RFC 9180 Base, PSK, Auth, and AuthPSK; ML-KEM and the hybrids have the first two |
 
 | Feature scope | Status |
 | --- | --- |
 | RFC 9180 Base, PSK, Auth, AuthPSK, export-only, and the algorithms above | Implemented |
 | Post-quantum ML-KEM KEMs of `draft-ietf-hpke-pq`, in the Base and PSK modes | Implemented |
-| Post-quantum/traditional hybrid KEMs and SHA-3 KDFs of the same draft | Deferred |
+| Post-quantum/traditional hybrid KEMs of the same draft, in the Base and PSK modes | Implemented |
+| SHA-3 KDFs of the same draft | Deferred |
 | HPKE-bis or another successor standard | Deferred to a new versioned module |
 | Application wire framing | Deferred to applications |
 
@@ -98,6 +101,44 @@ seed with SHAKE256, and changes if the draft does. That SHAKE256 is `mlkem`'s
 as well, the one ML-KEM itself runs on. The draft prefers ML-KEM-768 and
 ML-KEM-1024 to ML-KEM-512. See [SECURITY.md](SECURITY.md) for the audit status
 of `mlkem`.
+
+## Hybrid KEMs
+
+`Kem.Mlkem768_p256`, `Kem.Mlkem768_x25519`, and `Kem.Mlkem1024_p384` are the
+post-quantum/traditional hybrid KEMs of `draft-ietf-hpke-pq`, MLKEM768-P256,
+MLKEM768-X25519, and MLKEM1024-P384, as
+[`draft-irtf-cfrg-concrete-hybrid-kems`](https://datatracker.ietf.org/doc/draft-irtf-cfrg-concrete-hybrid-kems/)
+defines them. Each runs ML-KEM and an elliptic-curve Diffie-Hellman exchange
+side by side and hashes both secrets together with SHA3-256, so a message stays
+protected as long as either ML-KEM or the curve holds. `Kem.Mlkem768_x25519` is
+[X-Wing](https://datatracker.ietf.org/doc/draft-connolly-cfrg-xwing-kem/),
+identifier `0x647a`. Like ML-KEM they are a choice of KEM and nothing else
+changes:
+
+```ocaml
+let suite =
+  Suite.create ~kem:Kem.Mlkem768_x25519 ~kdf:Kdf.Hkdf_sha256
+    ~aead:Aead.Chacha20_poly1305
+```
+
+They behave as ML-KEM does, with no Auth or AuthPSK mode, except in what
+follows from the second half:
+
+- A private key is a 32-byte seed. Parsing one expands it with SHAKE256 into an
+  ML-KEM seed and a scalar and runs ML-KEM key generation, so parse a key once
+  and keep it. `derive_key_pair` derives the seed with SHAKE256, as for ML-KEM.
+- A public key is the ML-KEM encapsulation key followed by the group element,
+  an uncompressed SEC1 point or an X25519 public value: 1,216 bytes for
+  X-Wing. An encapsulated key is the ML-KEM ciphertext followed by an ephemeral
+  element: 1,120 bytes for X-Wing.
+- A tampered ML-KEM ciphertext decapsulates to an unrelated secret, as it does
+  alone, but an element that is not on the curve, or an X25519 value of low
+  order, is refused as `Invalid_encapsulation`. The concrete draft leaves the
+  X25519 value unchecked; no honest peer produces one that is refused.
+
+Neither draft is an RFC yet, and `derive_key_pair` changes if they do. The
+three hybrids reproduce every vector of `draft-ietf-hpke-pq-05` that uses an
+HKDF: see [test-vectors/PROVENANCE.md](test-vectors/PROVENANCE.md).
 
 ## Example
 

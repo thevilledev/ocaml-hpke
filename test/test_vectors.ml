@@ -77,14 +77,19 @@ let serialized_private_key kem encoded =
          canonical X25519 and X448 private keys after clamping. *)
       Private_key.of_bytes ~kem (hex encoded) |> ok |> Private_key.to_bytes
   | Kem.P256 | Kem.P384 | Kem.P521 -> hex encoded
-  (* An ML-KEM private key is serialized as the seed it was derived as. *)
-  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 -> hex encoded
+  (* An ML-KEM or hybrid private key is serialized as the seed it was derived
+     as. *)
+  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+  | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
+      hex encoded
 
 (* A Diffie-Hellman KEM encapsulates with an ephemeral key pair, which its
-   vectors publish. ML-KEM encapsulates from randomness alone. *)
+   vectors publish. ML-KEM and the hybrids encapsulate from randomness alone. *)
 let has_ephemeral_key = function
   | Kem.P256 | Kem.P384 | Kem.P521 | Kem.X25519 | Kem.X448 -> true
-  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 -> false
+  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+  | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
+      false
 
 let derive_key_pair_of vector kem ~role ~ikm_field ~sk_field ~pk_field =
   let derived_private, derived_public =
@@ -174,8 +179,9 @@ let check_exports vector sender receiver =
         (ok (Rfc9180.Receiver.export receiver ~context ~length)))
 
 (* The private and the public key are also parsed from their published
-   encodings, which for ML-KEM takes another path than deriving them: the seed
-   is expanded as it is, and the encapsulation key is validated and expanded. *)
+   encodings, which for ML-KEM and the hybrids takes another path than deriving
+   them: the seed is expanded as it is, and the encapsulation key is validated
+   and expanded. *)
 let check_parsed_keys vector kem (recipient, recipient_public) =
   let parsed = ok (Private_key.of_bytes ~kem (member_hex "skRm" vector)) in
   Alcotest.(check string)
@@ -453,8 +459,8 @@ let test_pq_parsed_keys vector =
    the key schedule, and none of what lies between. Running the RFC 9180 key
    schedule from the one to the others, over the public Kdf.extract and
    Kdf.expand, shows that an ML-KEM suite with an HKDF uses that key schedule
-   unchanged, and makes the published values known answers for both
-   functions. *)
+   unchanged, as does a hybrid suite, and makes the published values known
+   answers for both functions. *)
 let test_pq_key_schedule vector =
   let kdf = kdf vector in
   let aead = member_int "aead_id" vector |> Aead.of_int |> ok in
@@ -493,9 +499,9 @@ let test_pq_key_schedule vector =
     (member_string "exporter_secret" vector)
     (labeled_expand "exp" (Kdf.hash_size kdf))
 
-(* An ML-KEM key pair and encapsulation depend on nothing else in the suite, so
-   a vector whose KDF this library lacks is still a known answer for both. The
-   suite here only carries the KEM. *)
+(* An ML-KEM or hybrid key pair and encapsulation depend on nothing else in the
+   suite, so a vector whose KDF this library lacks is still a known answer for
+   both. The suite here only carries the KEM. *)
 let test_pq_kem_only vector =
   let kem = kem vector in
   let derived =
@@ -533,12 +539,12 @@ let () =
   let vectors = vectors_of "HPKE_TEST_VECTORS" "vectors" in
   Alcotest.(check int) "supported vector count" 128 (List.length vectors);
   let pq_vectors = vectors_of "HPKE_PQ_TEST_VECTORS" "vectors" in
-  Alcotest.(check int) "supported PQ vector count" 3 (List.length pq_vectors);
+  Alcotest.(check int) "supported PQ vector count" 6 (List.length pq_vectors);
   let pq_kem_only_vectors =
     vectors_of "HPKE_PQ_TEST_VECTORS" "kem_only_vectors"
   in
   Alcotest.(check int)
-    "KEM-only PQ vector count" 1
+    "KEM-only PQ vector count" 3
     (List.length pq_kem_only_vectors);
   let named_tests_of name test vectors =
     List.map
