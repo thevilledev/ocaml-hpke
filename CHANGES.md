@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-rc1 — 2026-09-26
+
+A release candidate for 0.4.0, tagged for testing and not submitted to the opam
+repository; 0.3.0 remains the latest stable release.
 
 Adds the post-quantum/traditional hybrid KEMs, and the successor draft of HPKE
 with the SHAKE KDFs in a module of its own. `Kem.id` gains constructors, which
