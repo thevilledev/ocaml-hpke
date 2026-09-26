@@ -615,7 +615,9 @@ theorem candidate_byte_ok (counter : Nat) (h : ¬counter > 255) :
     byte counter = some (i2osp counter 1) := by
   rw [byte_of_range (by omega) (by omega), Int.toNat_natCast]
 
-/-- Mirror of `Rfc9180.export` (lines 904-914) up to the KDF call: the `info`
+/-- Mirror of the two-stage branch of `Rfc9180.export` (lines 904-914), the
+only one an `Rfc9180` context takes, up to the KDF call (the one-stage branch
+is `Draft.exportInput`): the `info`
 it hands to `Kdf.expand_unchecked`, or its error. `internalError` is the
 handler for an `Invalid_argument` from `i2osp2`. -/
 def exportInfo (kdf : KdfId) (suiteId exporterContext : Bytes) (length : Int) :

@@ -42,6 +42,11 @@ exhaustive matches must handle.
 - The pinned `draft-ietf-hpke-pq-05` corpus gains the four SHAKE vectors in
   full, run through `Draft_hpke_04`, which also reproduces the six HKDF
   vectors and the 64 RFC 9180 Base and PSK vectors.
+- Mirror `Draft_hpke_04` in Lean: its KDF registry, `lengthPrefixed`, the
+  input of the one-stage key schedule, proved to be `CombineSecrets_OneStage`
+  and to bind all of its inputs unambiguously, the split of its output, the
+  one-stage export, and the error contract of its setup functions. The
+  conformance vectors grow to 13800 checks.
 - Extend the Lean mirrors to the hybrids. `Hybrid_kem` is proved to be the CG
   framework's `DeriveKeyPair`, `Encaps` and `Decaps` of
   `draft-irtf-cfrg-hybrid-kems`, decapsulation to recover what was
