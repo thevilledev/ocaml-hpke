@@ -638,6 +638,11 @@ def normalizedOpen (openCiphertext : Context → Except Err Bytes)
 
 /-! ### `Private.setup_*_with_ephemeral` (lines 1126-1127, 1230-1249) -/
 
+/-- The reason `dh` gives for an ML-KEM or a hybrid secret. -/
+def notDhReason (kem : KemId) : String :=
+  if kem.isHybrid then "hybrid KEM keys cannot perform a Diffie-Hellman exchange"
+  else "ML-KEM keys cannot perform a Diffie-Hellman exchange"
+
 /-- Mirror of `dh` (lines 744-769) on KEM-tagged keys; `exchange` is the
 library exchange of a Diffie-Hellman secret with public-key octets. -/
 def dh (exchange : PrivKey → PubKey → Except String Bytes) (sk : PrivKey) (pk : PubKey) :
@@ -647,7 +652,7 @@ def dh (exchange : PrivKey → PubKey → Except String Bytes) (sk : PrivKey) (p
     match exchange sk pk with
     | .ok v => .ok v
     | .error reason => .error (.invalidPublicKey reason)
-  else .error (.invalidPrivateKey "ML-KEM keys cannot perform a Diffie-Hellman exchange")
+  else .error (.invalidPrivateKey (notDhReason sk.kem))
 
 /-- Mirror of `encap_with` (lines 780-798); `extractAndExpand kem dh context`
 is `extract_and_expand`. -/
@@ -884,7 +889,7 @@ theorem encapWith_mlkem (exchange : PrivKey → PubKey → Except String Bytes)
     (eae : KemId → Bytes → Bytes → Bytes) (ephemeral : PrivKey) (sender : Option PrivKey)
     (recipient : PubKey) (h : ephemeral.kem = recipient.kem) (hml : ephemeral.kem.isDh = false) :
     encapWith exchange eae ephemeral sender recipient
-      = .error (.invalidPrivateKey "ML-KEM keys cannot perform a Diffie-Hellman exchange") := by
+      = .error (.invalidPrivateKey (notDhReason ephemeral.kem)) := by
   simp [encapWith, dh, h, bind, Except.bind]
   simp [← h, hml]
 
@@ -913,7 +918,7 @@ theorem withEphemeral_mlkem (L : LabeledKdf)
     (hr : recipient.kem = suite.kem) (hs : ∀ k, senderKey mode = some k → k.kem = suite.kem)
     (h : ephemeral.kem = recipient.kem) (hml : ephemeral.kem.isDh = false) :
     setupSenderWithEphemeral L exchange eae ephemeral suite recipient mode info
-      = .error (.invalidPrivateKey "ML-KEM keys cannot perform a Diffie-Hellman exchange") := by
+      = .error (.invalidPrivateKey (notDhReason ephemeral.kem)) := by
   unfold setupSenderWithEphemeral setupSenderEncap
   rw [setupSender_runs_encap (m := Id) L _ suite recipient mode info hmode hr hs]
   show senderResult L suite mode info (encapWith exchange eae ephemeral _ recipient) = _
@@ -1155,7 +1160,8 @@ theorem withEphemeral_mlkem_suite (L : LabeledKdf)
 def kemName : KemId → String
   | .p256 => "P256" | .p384 => "P384" | .p521 => "P521" | .x25519 => "X25519"
   | .x448 => "X448" | .mlkem512 => "Mlkem512" | .mlkem768 => "Mlkem768"
-  | .mlkem1024 => "Mlkem1024"
+  | .mlkem1024 => "Mlkem1024" | .mlkem768P256 => "Mlkem768_p256"
+  | .mlkem768X25519 => "Mlkem768_x25519" | .mlkem1024P384 => "Mlkem1024_p384"
 
 /-- The OCaml constructor of a mode. -/
 def modeName : Nat → String
@@ -1173,7 +1179,7 @@ def tableLines : List String :=
   table.map fun (s, r, sk, md, c) =>
     s!"{kemName s} {kemName r} {(sk.map kemName).getD "-"} {modeName md} {className c}"
 
-theorem table_length : table.length = 1152 := by decide +kernel
+theorem table_length : table.length = 2904 := by decide +kernel
 
 /-- How many rows expect each result. -/
 def classCounts : List (String × Nat) :=
@@ -1181,13 +1187,16 @@ def classCounts : List (String × Nat) :=
     (n, (table.filter fun (_, _, _, _, c) => className c = n).length)
 
 theorem classCounts_eq :
-    classCounts = [("Ok", 26), ("Key_mismatch", 742), ("Unsupported_mode", 384)] := by
+    classCounts = [("Ok", 32), ("Key_mismatch", 1420), ("Unsupported_mode", 1452)] := by
   decide +kernel
 
-/-- An ML-KEM suite refuses both authenticated modes even with matching keys. -/
+/-- An ML-KEM or hybrid suite refuses both authenticated modes even with
+matching keys. -/
 theorem table_mlkem_auth :
     ("Mlkem768 Mlkem768 Mlkem768 Auth Unsupported_mode" ∈ tableLines) ∧
     ("Mlkem768 Mlkem768 Mlkem768 Auth_psk Unsupported_mode" ∈ tableLines) ∧
+    ("Mlkem768_x25519 Mlkem768_x25519 Mlkem768_x25519 Auth Unsupported_mode" ∈ tableLines) ∧
+    ("Mlkem768_p256 Mlkem768_p256 - Psk_mode Ok" ∈ tableLines) ∧
     ("X25519 X25519 X25519 Auth_psk Ok" ∈ tableLines) := by
   decide +kernel
 

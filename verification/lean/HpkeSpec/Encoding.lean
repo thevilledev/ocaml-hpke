@@ -262,6 +262,11 @@ example : kemSuiteId .mlkem512 = [0x4b, 0x45, 0x4d, 0x00, 0x40] ∧
     kemSuiteId .mlkem768 = [0x4b, 0x45, 0x4d, 0x00, 0x41] ∧
     kemSuiteId .mlkem1024 = [0x4b, 0x45, 0x4d, 0x00, 0x42] := by decide +kernel
 
+/-- The hybrid `suite_id` values of draft-ietf-hpke-pq-05 Section 4. -/
+example : kemSuiteId .mlkem768P256 = [0x4b, 0x45, 0x4d, 0x00, 0x50] ∧
+    kemSuiteId .mlkem768X25519 = [0x4b, 0x45, 0x4d, 0x64, 0x7a] ∧
+    kemSuiteId .mlkem1024P384 = [0x4b, 0x45, 0x4d, 0x00, 0x51] := by decide +kernel
+
 /-! ## Labeled KDF inputs -/
 
 /-- Mirror of the input keying material `Labeled_kdf.extract` (lines 647-648)
@@ -488,7 +493,7 @@ inductive LengthCall where
   | candidate (kem : KemId)
   /-- `secret`, lines 692-693. -/
   | sk (kem : KemId)
-  /-- the ML-KEM seed, lines 702-703. -/
+  /-- the ML-KEM or hybrid seed, lines 702-703. -/
   | deriveKeyPair (kem : KemId)
   /-- `extract_and_expand`, lines 773-774. -/
   | sharedSecret (kem : KemId)
@@ -587,8 +592,8 @@ theorem LengthCall.labeledInfo_ok (c : LengthCall) (hc : c.Guard) (suiteId info 
       some (labeledInfoSpec suiteId c.label info c.length.toNat) :=
   labeledInfo_eq_spec _ _ _ (c.length_range hc).1 (c.length_range hc).2
 
-/-- The ML-KEM seed derivation never raises and is draft-ietf-hpke-pq-05's
-`LabeledDerive(ikm, "DeriveKeyPair", "", Nsk)`. -/
+/-- The ML-KEM and hybrid seed derivation never raises and is
+draft-ietf-hpke-pq-05's `LabeledDerive(ikm, "DeriveKeyPair", "", Nsk)`. -/
 theorem deriveKeyPair_input_ok (kem : KemId) (ikm : Bytes) :
     kemDeriveShake256Input kem (ascii "DeriveKeyPair") [] ikm kem.privateKeySize =
       some (labeledDeriveSpec (kemSuiteId kem) ikm (ascii "DeriveKeyPair") []
@@ -598,10 +603,11 @@ theorem deriveKeyPair_input_ok (kem : KemId) (ikm : Bytes) :
   have hl : (ascii "DeriveKeyPair").length < 0x10000 := by decide +kernel
   rw [kemDeriveShake256Input_eq_spec _ _ _ _ hl h.1 h.2, Int.toNat_natCast]
 
-/-- draft-ietf-hpke-pq-05 Section 3 derives a 64-byte seed. -/
+/-- draft-ietf-hpke-pq-05 Section 3 derives a 64-byte seed for ML-KEM, and
+Section 4 a 32-byte one for a hybrid. -/
 theorem mlkem_seed_length (kem : KemId) (h : kem.isDh = false) :
-    kem.privateKeySize = 64 := by
-  cases kem <;> simp_all [KemId.isDh, KemId.privateKeySize]
+    kem.privateKeySize = if kem.isHybrid then 32 else 64 := by
+  cases kem <;> simp_all [KemId.isDh, KemId.isHybrid, KemId.privateKeySize]
 
 /-- `Util.byte counter` in `candidate` never raises: `sample` counts from 0 and
 stops once `counter > 255` (lines 705-706). -/

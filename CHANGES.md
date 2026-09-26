@@ -28,6 +28,12 @@ which exhaustive matches must handle.
   lacks join the ML-KEM-1024 one as KEM-only vectors, for key derivation and
   encapsulation.
 - `hpke.for_testing` refuses a hybrid suite as it does an ML-KEM one.
+- Extend the Lean mirrors to the hybrids. `Hybrid_kem` is proved to be the CG
+  framework's `DeriveKeyPair`, `Encaps` and `Decaps` of
+  `draft-irtf-cfrg-hybrid-kems`, decapsulation to recover what was
+  encapsulated, and the P-256 and P-384 scalar sampling to be the concrete
+  draft's `RandomScalar`. The conformance vectors grow from 4442 checks to
+  8843, all 2904 setup combinations of the eleven KEMs among them.
 
 ## 0.3.0 — 2026-09-25
 

@@ -17,7 +17,9 @@ implements:
 * `Util.normalize_x25519` and `Util.normalize_x448`, against
   `decodeScalar25519` and `decodeScalar448` of RFC 7748 Section 5;
 * the byte-level part of `Private_key.of_bytes`;
-* the retry loop of `generate_key_pair` for the Diffie-Hellman KEMs.
+* the retry loop of `generate_key_pair` for the Diffie-Hellman KEMs;
+* `Nist_group.random_scalar` of the P-256 and P-384 hybrids, against
+  `RandomScalar` of draft-irtf-cfrg-concrete-hybrid-kems Section 3.1.1.
 
 Every definition is computable, so it can be `#eval`ed to produce conformance
 vectors; on a set of edge cases (orders `n - 1`, `n`, `n + 1`, zero, wrong
@@ -340,7 +342,8 @@ def curveOrder : KemId → Raises Bytes
       "01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409"
   | .x25519 => .error "X25519 has no rejection-sampling order"
   | .x448 => .error "X448 has no rejection-sampling order"
-  | .mlkem512 | .mlkem768 | .mlkem1024 => .error "ML-KEM has no rejection-sampling order"
+  | .mlkem512 | .mlkem768 | .mlkem1024 | .mlkem768P256 | .mlkem768X25519 | .mlkem1024P384 =>
+    .error "ML-KEM has no rejection-sampling order"
 
 /-- The order `n` of the P-256 base point (FIPS 186-5 / SEC 2 `secp256r1`),
 in decimal, from the `Order` field of `openssl ecparam -name prime256v1
@@ -1101,7 +1104,8 @@ def privateKeyBytes (kem : KemId) (bytes : Bytes) : Raises (Except Err Bytes) :=
       | .ok true => .ok (.ok bytes)
       | .ok false => .ok (.error (.invalidPrivateKey "scalar is outside the valid range"))
       | .error e => .error e
-    | .mlkem512 | .mlkem768 | .mlkem1024 => .ok (.ok bytes)
+    | .mlkem512 | .mlkem768 | .mlkem1024 | .mlkem768P256 | .mlkem768X25519
+    | .mlkem1024P384 => .ok (.ok bytes)
 
 /-- `Private_key.of_bytes` never lets an `Invalid_argument` escape. -/
 theorem privateKeyBytes_noRaise (kem : KemId) (b : Bytes) :
@@ -1121,7 +1125,8 @@ theorem privateKeyBytes_noRaise (kem : KemId) (b : Bytes) :
       · exact ⟨_, rfl⟩
       · exact ⟨_, rfl⟩
       · rename_i heq; cases heq
-    | mlkem512 | mlkem768 | mlkem1024 => exact ⟨_, rfl⟩
+    | mlkem512 | mlkem768 | mlkem1024 | mlkem768P256 | mlkem768X25519 | mlkem1024P384 =>
+      exact ⟨_, rfl⟩
 
 /-- Storing is stable: the bytes `Private_key.of_bytes` stores (what
 `Private_key.to_bytes` returns) are accepted again and stored unchanged. -/
@@ -1160,7 +1165,7 @@ theorem privateKeyBytes_stable (kem : KemId) (b nb : Bytes)
         rw [hv]
       · cases h
       · cases h
-    | mlkem512 | mlkem768 | mlkem1024 =>
+    | mlkem512 | mlkem768 | mlkem1024 | mlkem768P256 | mlkem768X25519 | mlkem1024P384 =>
       change Except.ok (Except.ok b) = _ at h
       injection h with h; injection h with h; subst h
       unfold privateKeyBytes
@@ -1317,6 +1322,152 @@ theorem generateKeyPairDh_dkpf_iff {α : Type} (attempt : Nat → Except Err α)
       rw [h i (by simpa using hi)]
       simp [retryable]
     rw [hf]; rfl
+
+/-! ## `RandomScalar` of the P-256 and P-384 hybrids -/
+
+/-- `Curve.seed_size` of `P256_group` and `P384_group` (`Nseed` of
+draft-irtf-cfrg-concrete-hybrid-kems Section 3.1.1): four candidates for
+P-256, one for P-384. -/
+def groupSeedSize : KemId → Nat
+  | .p256 => 128
+  | .p384 => 48
+  | _ => 32
+
+theorem groupSeedSize_candidates :
+    groupSeedSize .p256 = 4 * KemId.privateKeySize .p256 ∧
+    groupSeedSize .p384 = 1 * KemId.privateKeySize .p384 := by decide
+
+/-- Mirror of `sample` in `Nist_group.random_scalar`: the candidate at
+`offset`, `String.sub seed offset Nscalar`, if the seed still holds one;
+the first that `valid_nist_scalar` accepts is returned (its conversion by
+`secret_of_octets` is the library's). -/
+def randomScalarLoop (group : KemId) (seed : Bytes) (offset : Nat) : Raises (Option Bytes) :=
+  if offset + group.privateKeySize > seed.length then .ok none
+  else
+    let candidate := (seed.drop offset).take group.privateKeySize
+    match validNistScalar group candidate with
+    | .ok true => .ok (some candidate)
+    | .ok false => randomScalarLoop group seed (offset + group.privateKeySize)
+    | .error e => .error e
+termination_by seed.length - offset
+decreasing_by
+  have : 0 < group.privateKeySize := by cases group <;> decide
+  omega
+
+/-- Mirror of `Nist_group.random_scalar`: `sample 0`. -/
+def randomScalar (group : KemId) (seed : Bytes) : Raises (Option Bytes) :=
+  randomScalarLoop group seed 0
+
+/-- The specification, draft-irtf-cfrg-concrete-hybrid-kems Section 3.1.1:
+```
+def RandomScalar(seed):
+  start = 0
+  end = Nscalar
+  sk = OS2IP(seed[start : end])
+
+  while sk == 0 || sk >= order:
+    start = end
+    end = end + Nscalar
+    if end > len(seed):
+        raise Exception("Rejection sampling failed")
+    sk = OS2IP(seed[start : end])
+  return sk
+```
+`randomScalarSpecLoop order n seed start` runs the loop from the candidate
+`seed[start : start + n]`; the exception is `none`. `Nscalar` is positive;
+the guard on it only makes the loop visibly terminate. -/
+def randomScalarSpecLoop (order n : Nat) (seed : Bytes) (start : Nat) : Option Nat :=
+  let sk := os2ip ((seed.drop start).take n)
+  if sk = 0 ∨ sk ≥ order then
+    if n = 0 ∨ start + n + n > seed.length then none
+    else randomScalarSpecLoop order n seed (start + n)
+  else some sk
+termination_by seed.length - start
+decreasing_by omega
+
+def RandomScalar (order n : Nat) (seed : Bytes) : Option Nat :=
+  randomScalarSpecLoop order n seed 0
+
+private theorem randomScalarLoop_eq_spec (group : KemId) (hk : isNist group = true)
+    (seed : Bytes) : ∀ k start, seed.length - start = k →
+      start + group.privateKeySize ≤ seed.length →
+      randomScalarLoop group seed start
+        = .ok ((randomScalarSpecLoop (groupOrder group) group.privateKeySize seed start).map
+            fun n => i2osp n group.privateKeySize) := by
+  have hpos : 0 < group.privateKeySize := by cases group <;> decide
+  intro k
+  induction k using Nat.strongRecOn with
+  | ind k ih =>
+    intro start hk' hle
+    rw [randomScalarLoop, randomScalarSpecLoop]
+    have hnot : ¬ (start + group.privateKeySize > seed.length) := by omega
+    rw [ite_eq_right hnot]
+    dsimp only
+    have hlen : ((seed.drop start).take group.privateKeySize).length = group.privateKeySize := by
+      simp; omega
+    rw [validNistScalar_eq group hk]
+    by_cases hv : 0 < os2ip ((seed.drop start).take group.privateKeySize) ∧
+        os2ip ((seed.drop start).take group.privateKeySize) < groupOrder group
+    · have hd : decide (((seed.drop start).take group.privateKeySize).length =
+          group.privateKeySize ∧ 0 < os2ip ((seed.drop start).take group.privateKeySize) ∧
+          os2ip ((seed.drop start).take group.privateKeySize) < groupOrder group) = true :=
+        decide_eq_true ⟨hlen, hv⟩
+      simp only [hd]
+      have hc : ¬ (os2ip ((seed.drop start).take group.privateKeySize) = 0 ∨
+          os2ip ((seed.drop start).take group.privateKeySize) ≥ groupOrder group) := by omega
+      simp only [hc, ite_false, Option.map_some]
+      have hio := i2osp_os2ip ((seed.drop start).take group.privateKeySize)
+      rw [hlen] at hio
+      rw [hio]
+    · have hd : decide (((seed.drop start).take group.privateKeySize).length =
+          group.privateKeySize ∧ 0 < os2ip ((seed.drop start).take group.privateKeySize) ∧
+          os2ip ((seed.drop start).take group.privateKeySize) < groupOrder group) = false :=
+        decide_eq_false (fun h => hv h.2)
+      simp only [hd]
+      have hc : os2ip ((seed.drop start).take group.privateKeySize) = 0 ∨
+          os2ip ((seed.drop start).take group.privateKeySize) ≥ groupOrder group := by omega
+      simp only [hc, ite_true]
+      by_cases hend : start + group.privateKeySize + group.privateKeySize > seed.length
+      · rw [ite_eq_left (Or.inr hend), randomScalarLoop, ite_eq_left hend]; rfl
+      · rw [ite_eq_right (by omega)]
+        exact ih (seed.length - (start + group.privateKeySize)) (by omega) _ rfl (by omega)
+
+/-- `Nist_group.random_scalar` is `RandomScalar`: it returns the encoding of
+the scalar the draft's loop returns, and nothing exactly when the loop raises.
+It never raises itself. The seed must hold at least one candidate, as the
+`Nseed`-byte seeds of both groups do. -/
+theorem randomScalar_eq_spec (group : KemId) (hk : isNist group = true) (seed : Bytes)
+    (hlen : group.privateKeySize ≤ seed.length) :
+    randomScalar group seed
+      = .ok ((RandomScalar (groupOrder group) group.privateKeySize seed).map
+          fun n => i2osp n group.privateKeySize) :=
+  randomScalarLoop_eq_spec group hk seed _ 0 rfl (by omega)
+
+private theorem randomScalarLoop_valid (group : KemId) (seed : Bytes) :
+    ∀ k start, seed.length - start = k → ∀ c,
+      randomScalarLoop group seed start = .ok (some c) → validNistScalar group c = .ok true := by
+  have hpos : 0 < group.privateKeySize := by cases group <;> decide
+  intro k
+  induction k using Nat.strongRecOn with
+  | ind k ih =>
+    intro start hk c h
+    rw [randomScalarLoop] at h
+    split at h
+    · cases h
+    · rename_i hnot
+      dsimp only at h
+      split at h
+      · rename_i hv
+        injection h with h; injection h with h; subst h; exact hv
+      · exact ih (seed.length - (start + group.privateKeySize)) (by omega) _ rfl c h
+      · cases h
+
+/-- A scalar `random_scalar` returns is in `[1, n)`: a zero scalar, which the
+generic draft forbids (Section 3.2), is never used. -/
+theorem randomScalar_range (group : KemId) (hk : isNist group = true) (seed : Bytes)
+    {c : Bytes} (h : randomScalar group seed = .ok (some c)) :
+    c.length = group.privateKeySize ∧ 0 < os2ip c ∧ os2ip c < groupOrder group :=
+  (validNistScalar_iff group hk c).mp (randomScalarLoop_valid group seed _ 0 rfl c h)
 
 end Scalar
 end Hpke

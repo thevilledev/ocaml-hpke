@@ -10,7 +10,7 @@ Two kinds of definition appear here:
   Diffie-Hellman KEMs, as in OCaml);
 * *specifications* (`kemTable`, `kdfTable`, `aeadTable`) transcribe the IANA
   and RFC tables: RFC 9180 Tables 2, 3 and 5 and draft-ietf-hpke-pq-05's
-  ML-KEM table.
+  ML-KEM and PQ/T hybrid tables (Sections 8.1 and 8.2).
 
 The theorems prove that every mirror agrees with its table and that the
 integer codecs are mutually inverse on the registry.
@@ -68,6 +68,7 @@ def Err.cls : Err → ErrClass
 
 inductive KemId where
   | p256 | p384 | p521 | x25519 | x448 | mlkem512 | mlkem768 | mlkem1024
+  | mlkem768P256 | mlkem768X25519 | mlkem1024P384
   deriving DecidableEq, Repr, Inhabited
 
 inductive KdfId where
@@ -80,7 +81,9 @@ inductive AeadId where
 
 namespace KemId
 
-def all : List KemId := [p256, p384, p521, x25519, x448, mlkem512, mlkem768, mlkem1024]
+def all : List KemId :=
+  [p256, p384, p521, x25519, x448, mlkem512, mlkem768, mlkem1024, mlkem768P256,
+    mlkem768X25519, mlkem1024P384]
 
 theorem mem_all (k : KemId) : k ∈ all := by cases k <;> simp [all]
 
@@ -89,44 +92,71 @@ def toInt : KemId → Int
   | p256 => 0x0010 | p384 => 0x0011 | p521 => 0x0012
   | x25519 => 0x0020 | x448 => 0x0021
   | mlkem512 => 0x0040 | mlkem768 => 0x0041 | mlkem1024 => 0x0042
+  | mlkem768P256 => 0x0050 | mlkem1024P384 => 0x0051 | mlkem768X25519 => 0x647a
 
 /-- Mirror of `Kem.of_int`. -/
 def ofInt : Int → Except Err KemId
   | 0x0010 => .ok p256 | 0x0011 => .ok p384 | 0x0012 => .ok p521
   | 0x0020 => .ok x25519 | 0x0021 => .ok x448
   | 0x0040 => .ok mlkem512 | 0x0041 => .ok mlkem768 | 0x0042 => .ok mlkem1024
+  | 0x0050 => .ok mlkem768P256 | 0x0051 => .ok mlkem1024P384
+  | 0x647a => .ok mlkem768X25519
   | id => .error (.unsupportedAlgorithm id)
 
-/-- Mirror of `Kem.public_key_size` (`Npk`). -/
+/-- Mirror of `Kem.public_key_size` (`Npk`), with the sums the OCaml writes for
+the hybrids. -/
 def publicKeySize : KemId → Nat
   | p256 => 65 | p384 => 97 | p521 => 133 | x25519 => 32 | x448 => 56
   | mlkem512 => 800 | mlkem768 => 1184 | mlkem1024 => 1568
+  | mlkem768P256 => 1184 + 65 | mlkem768X25519 => 1184 + 32 | mlkem1024P384 => 1568 + 97
 
 /-- Mirror of `Kem.private_key_size` (`Nsk`). -/
 def privateKeySize : KemId → Nat
   | p256 => 32 | p384 => 48 | p521 => 66 | x25519 => 32 | x448 => 56
   | mlkem512 | mlkem768 | mlkem1024 => 64
+  | mlkem768P256 | mlkem768X25519 | mlkem1024P384 => 32
 
 /-- Mirror of `Kem.encapsulated_key_size` (`Nenc`), including its fall-through
 to `public_key_size` for the Diffie-Hellman KEMs. -/
 def encapsulatedKeySize : KemId → Nat
   | k@p256 | k@p384 | k@p521 | k@x25519 | k@x448 => publicKeySize k
   | mlkem512 => 768 | mlkem768 => 1088 | mlkem1024 => 1568
+  | mlkem768P256 => 1088 + 65 | mlkem768X25519 => 1088 + 32 | mlkem1024P384 => 1568 + 97
 
 /-- Mirror of `Kem.secret_size` (`Nsecret`). -/
 def secretSize : KemId → Nat
   | p256 => 32 | p384 => 48 | p521 => 64 | x25519 => 32 | x448 => 64
   | mlkem512 | mlkem768 | mlkem1024 => 32
+  | mlkem768P256 | mlkem768X25519 | mlkem1024P384 => 32
 
 /-- Mirror of `Kem.supports_auth`. -/
 def supportsAuth : KemId → Bool
   | p256 | p384 | p521 | x25519 | x448 => true
-  | mlkem512 | mlkem768 | mlkem1024 => false
+  | mlkem512 | mlkem768 | mlkem1024 | mlkem768P256 | mlkem768X25519 | mlkem1024P384 => false
 
-/-- Whether the KEM is a DHKEM of RFC 9180 (as opposed to ML-KEM). -/
+/-- Whether the KEM is a DHKEM of RFC 9180 (as opposed to ML-KEM or a hybrid). -/
 def isDh : KemId → Bool
   | p256 | p384 | p521 | x25519 | x448 => true
   | _ => false
+
+/-- Whether the KEM is a DHKEM over a NIST curve. -/
+def isNist' : KemId → Bool
+  | p256 | p384 | p521 => true
+  | _ => false
+
+/-- Whether the KEM is a PQ/T hybrid of draft-ietf-hpke-pq-05 Section 4. -/
+def isHybrid : KemId → Bool
+  | mlkem768P256 | mlkem768X25519 | mlkem1024P384 => true
+  | _ => false
+
+/-- The `Params` of the `Hybrid_kem` functor applications (`pq`, and the group,
+named by the DHKEM over it): the ML-KEM parameter set and the nominal group of
+each hybrid (draft-irtf-cfrg-concrete-hybrid-kems Section 4). -/
+def hybridParts : KemId → Option (KemId × KemId)
+  | mlkem768P256 => some (mlkem768, p256)
+  | mlkem768X25519 => some (mlkem768, x25519)
+  | mlkem1024P384 => some (mlkem1024, p384)
+  | _ => none
 
 end KemId
 
@@ -180,18 +210,19 @@ def tagSize (_ : AeadId) : Nat := 16
 
 end AeadId
 
-/-- Mirror of `Labeled_kdf.kem_kdf`, the KDF of a DHKEM; ML-KEM has none, where
-OCaml raises `Invalid_argument`. -/
+/-- Mirror of `Labeled_kdf.kem_kdf`, the KDF of a DHKEM; ML-KEM and the hybrids
+have none, where OCaml raises `Invalid_argument`. -/
 def kemKdf : KemId → Option KdfId
   | .p256 | .x25519 => some .hkdfSha256
   | .p384 => some .hkdfSha384
   | .p521 | .x448 => some .hkdfSha512
-  | .mlkem512 | .mlkem768 | .mlkem1024 => none
+  | .mlkem512 | .mlkem768 | .mlkem1024 | .mlkem768P256 | .mlkem768X25519
+  | .mlkem1024P384 => none
 
 /-! ## Specification tables -/
 
 /-- A row of the HPKE KEM registry (RFC 9180 Table 2; draft-ietf-hpke-pq-05
-Section 3 for ML-KEM): identifier, `Nsecret`, `Nenc`, `Npk`, `Nsk`, `Auth`,
+Sections 8.1 and 8.2 for ML-KEM and the hybrids): identifier, `Nsecret`, `Nenc`, `Npk`, `Nsk`, `Auth`,
 and for a DHKEM the KDF named in the KEM's name. -/
 structure KemRow where
   id : Int
@@ -212,6 +243,9 @@ def kemTable : KemId → KemRow
   | .mlkem512 => ⟨0x0040, 32, 768, 800, 64, false, none⟩
   | .mlkem768 => ⟨0x0041, 32, 1088, 1184, 64, false, none⟩
   | .mlkem1024 => ⟨0x0042, 32, 1568, 1568, 64, false, none⟩
+  | .mlkem768P256 => ⟨0x0050, 32, 1153, 1249, 32, false, none⟩
+  | .mlkem1024P384 => ⟨0x0051, 32, 1665, 1665, 32, false, none⟩
+  | .mlkem768X25519 => ⟨0x647a, 32, 1120, 1216, 32, false, none⟩
 
 /-- RFC 9180 Table 3: identifier and `Nh`. -/
 def kdfTable : KdfId → Int × Nat
@@ -246,6 +280,24 @@ theorem aead_matches_table (a : AeadId) :
 /-- `Kem.supports_auth` is exactly "is a DHKEM". -/
 theorem supportsAuth_iff_isDh (k : KemId) : k.supportsAuth = k.isDh := by
   cases k <;> rfl
+
+/-- A KEM is a DHKEM, a hybrid, or ML-KEM alone, and never two of these. -/
+theorem isDh_isHybrid (k : KemId) : ¬ (k.isDh = true ∧ k.isHybrid = true) := by
+  cases k <;> simp [KemId.isDh, KemId.isHybrid]
+
+theorem isHybrid_iff_parts (k : KemId) : k.isHybrid = true ↔ (KemId.hybridParts k).isSome := by
+  cases k <;> simp [KemId.isHybrid, KemId.hybridParts]
+
+/-- The hybrid sizes of draft-ietf-hpke-pq-05 Section 8.2 are those of
+draft-irtf-cfrg-concrete-hybrid-kems Section 4: `Nek` is the ML-KEM `Nek` plus
+the group's `Nelem` (the DHKEM `Npk` over the group), `Nct` the ML-KEM `Nct`
+plus `Nelem`, and the shared secret the 32 bytes of SHA3-256. -/
+theorem hybrid_sizes (k pq g : KemId) (h : KemId.hybridParts k = some (pq, g)) :
+    k.publicKeySize = pq.publicKeySize + g.publicKeySize ∧
+    k.encapsulatedKeySize = pq.encapsulatedKeySize + g.publicKeySize ∧
+    k.privateKeySize = 32 ∧ k.secretSize = 32 ∧
+    pq.isDh = false ∧ pq.isHybrid = false ∧ g.isDh = true ∧ g.supportsAuth = true := by
+  cases k <;> simp [KemId.hybridParts] at h <;> obtain ⟨rfl, rfl⟩ := h <;> decide
 
 /-- A DHKEM encapsulates to a serialized public key (RFC 9180 Section 4.1). -/
 theorem dh_nenc_eq_npk (k : KemId) (h : k.isDh = true) :
@@ -308,7 +360,8 @@ theorem KemId.ofInt_error {n : Int} (h : ∀ k : KemId, k.toInt ≠ n) :
   split <;> first | rfl | (exfalso; first
     | exact h .p256 rfl | exact h .p384 rfl | exact h .p521 rfl
     | exact h .x25519 rfl | exact h .x448 rfl | exact h .mlkem512 rfl
-    | exact h .mlkem768 rfl | exact h .mlkem1024 rfl)
+    | exact h .mlkem768 rfl | exact h .mlkem1024 rfl | exact h .mlkem768P256 rfl
+    | exact h .mlkem768X25519 rfl | exact h .mlkem1024P384 rfl)
 
 theorem AeadId.ofInt_error {n : Int} (h : ∀ a : AeadId, a.toInt ≠ n) :
     AeadId.ofInt n = .error (.unsupportedAlgorithm n) := by
