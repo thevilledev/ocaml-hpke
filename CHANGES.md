@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-Adds the post-quantum/traditional hybrid KEMs. `Kem.id` gains constructors,
-which exhaustive matches must handle.
+Adds the post-quantum/traditional hybrid KEMs, and the successor draft of HPKE
+with the SHAKE KDFs in a module of its own. `Kem.id` gains constructors, which
+exhaustive matches must handle.
 
 - Add `Kem.Mlkem768_p256` (MLKEM768-P256, `0x0050`), `Kem.Mlkem768_x25519`
   (MLKEM768-X25519, or X-Wing, `0x647a`), and `Kem.Mlkem1024_p384`
@@ -28,6 +29,19 @@ which exhaustive matches must handle.
   lacks join the ML-KEM-1024 one as KEM-only vectors, for key derivation and
   encapsulation.
 - `hpke.for_testing` refuses a hybrid suite as it does an ML-KEM one.
+- Add `Hpke.Draft_hpke_04`, HPKE as `draft-ietf-hpke-hpke-04` specifies it,
+  in a separate versioned module so that `Hpke.Rfc9180` keeps its wire
+  behavior. It offers the Base and PSK modes over every KEM, with a KDF
+  registry of its own: the RFC 9180 HKDFs, with which a suite is the RFC 9180
+  suite of the same identifiers, and the one-stage SHAKE128 (`0x0010`) and
+  SHAKE256 (`0x0011`) of `draft-ietf-hpke-pq-05`, with which the key schedule
+  and exports run `LabeledDerive`. Keys, AEADs, PSKs and contexts are shared.
+  `Draft_hpke_04.Kdf.derive` exposes the unlabeled `Derive` for layered
+  protocols. TurboSHAKE128 and TurboSHAKE256 wait for `mlkem` to provide
+  TurboSHAKE.
+- The pinned `draft-ietf-hpke-pq-05` corpus gains the four SHAKE vectors in
+  full, run through `Draft_hpke_04`, which also reproduces the six HKDF
+  vectors and the 64 RFC 9180 Base and PSK vectors.
 - Extend the Lean mirrors to the hybrids. `Hybrid_kem` is proved to be the CG
   framework's `DeriveKeyPair`, `Encaps` and `Decaps` of
   `draft-irtf-cfrg-hybrid-kems`, decapsulation to recover what was

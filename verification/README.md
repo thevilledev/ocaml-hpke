@@ -131,6 +131,11 @@ The following are assumed, not proved:
   * The mirage-crypto block-count checks are transcribed from its source, as
     are eqaf's `compare_be` and the NIST point checks. The conformance test
     exercises them where it can.
+* **`Hpke.Draft_hpke_04`.** The module of the successor draft came after the
+  mirrors, and its one-stage key schedule and export are not yet transcribed.
+  With an HKDF it runs the `Rfc9180` code that the mirrors cover. Its SHAKE
+  path is checked by the known-answer vectors of `draft-ietf-hpke-pq-05`, the
+  unit tests and the fuzzer.
 * **The mirrors.** They are hand-written transcriptions of the OCaml.
   `conformance/` checks them on concrete inputs, not symbolically.
   `Sys.max_string_length` and the placement of poll points (read from

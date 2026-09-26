@@ -58,6 +58,9 @@ disclosure after a fix is available.
   about `derive_key_pair` applies. Unlike that draft, an X25519 exchange that
   yields the all-zero value is refused, which only input no honest peer
   produces can cause.
+- `Hpke.Draft_hpke_04` follows `draft-ietf-hpke-hpke-04`, which is not yet an
+  RFC. Its SHAKE128 and SHAKE256 KDFs are `mlkem`'s SHAKE, with the audit
+  status above. With an HKDF its suites are RFC 9180's.
 - A forged ML-KEM or hybrid encapsulated key of the right length, apart from
   an invalid hybrid group element, does not fail to decapsulate; it yields a
   secret unrelated to the sender's. A receiver that opens messages sees

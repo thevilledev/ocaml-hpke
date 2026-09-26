@@ -1961,6 +1961,265 @@ let hybrid_rejection_sampling () =
       | Ok _ -> Alcotest.failf "%s sampled a scalar from no candidate" name)
     [ Kem.Mlkem768_p256; Kem.Mlkem1024_p384 ]
 
+(* Hpke.Draft_hpke_04 *)
+
+let draft_kdfs =
+  Draft_hpke_04.Kdf.
+    [ Hkdf_sha256; Hkdf_sha384; Hkdf_sha512; Shake128; Shake256 ]
+
+let draft_registry () =
+  List.iter
+    (fun (kdf, identifier, nh, two_stage) ->
+      let name = Format.asprintf "%a" Draft_hpke_04.Kdf.pp kdf in
+      Alcotest.(check int)
+        (name ^ " identifier") identifier
+        (Draft_hpke_04.Kdf.to_int kdf);
+      Alcotest.(check bool)
+        (name ^ " identifier round trip")
+        true
+        (Draft_hpke_04.Kdf.of_int identifier = Ok kdf);
+      Alcotest.(check int) (name ^ " Nh") nh (Draft_hpke_04.Kdf.hash_size kdf);
+      Alcotest.(check bool)
+        (name ^ " two-stage") true
+        (Draft_hpke_04.Kdf.two_stage kdf = two_stage);
+      (* A two-stage KDF has no Derive, and a one-stage one derives. *)
+      match (two_stage, Draft_hpke_04.Kdf.derive kdf "ikm" 5) with
+      | Some _, Error (Error.Unsupported_algorithm id) ->
+          Alcotest.(check int) (name ^ " Derive refused") identifier id
+      | None, Ok output ->
+          Alcotest.(check int)
+            (name ^ " Derive length") 5 (String.length output)
+      | _ -> Alcotest.failf "%s Derive" name)
+    [
+      (Draft_hpke_04.Kdf.Hkdf_sha256, 0x0001, 32, Some Kdf.Hkdf_sha256);
+      (Draft_hpke_04.Kdf.Hkdf_sha384, 0x0002, 48, Some Kdf.Hkdf_sha384);
+      (Draft_hpke_04.Kdf.Hkdf_sha512, 0x0003, 64, Some Kdf.Hkdf_sha512);
+      (Draft_hpke_04.Kdf.Shake128, 0x0010, 32, None);
+      (Draft_hpke_04.Kdf.Shake256, 0x0011, 64, None);
+    ];
+  Alcotest.(check int) "every draft KDF is listed" (List.length draft_kdfs) 5;
+  (* SHAKE of FIPS 202, from OpenSSL's hashlib: an empty input, cut to 8. *)
+  check_hex "SHAKE128 Derive" "7f9c2ba4e88f827d"
+    (ok (Draft_hpke_04.Kdf.derive Draft_hpke_04.Kdf.Shake128 "" 8));
+  check_hex "SHAKE256 Derive" "46b9dd2b0ba88d13"
+    (ok (Draft_hpke_04.Kdf.derive Draft_hpke_04.Kdf.Shake256 "" 8));
+  (match Draft_hpke_04.Kdf.derive Draft_hpke_04.Kdf.Shake256 "" (-1) with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "negative Derive length");
+  (* TurboSHAKE and unknown identifiers are refused. *)
+  List.iter
+    (fun identifier ->
+      match Draft_hpke_04.Kdf.of_int identifier with
+      | Error (Error.Unsupported_algorithm id) when id = identifier -> ()
+      | _ -> Alcotest.failf "KDF 0x%04x was accepted" identifier)
+    [ 0x0000; 0x0004; 0x0012; 0x0013; 0xffff ]
+
+(* Every KEM with every one-stage KDF and AEAD, in both modes. *)
+let draft_round_trips () =
+  let generator = rng () in
+  let psk = ok (Psk.create ~secret:(String.make 32 '\x5a') ~id:"draft-psk") in
+  List.iter
+    (fun kem ->
+      let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+      List.iter
+        (fun kdf ->
+          List.iter
+            (fun aead ->
+              let suite = Draft_hpke_04.Suite.create ~kem ~kdf ~aead in
+              let sealed =
+                ok
+                  (Draft_hpke_04.seal_base ~rng:generator suite
+                     ~recipient:public ~info:"draft-info" ~aad:"draft-aad"
+                     ~plaintext:"\000draft\255")
+              in
+              Alcotest.(check string)
+                "draft Base round trip" "\000draft\255"
+                (ok
+                   (Draft_hpke_04.open_base suite ~recipient ~info:"draft-info"
+                      ~aad:"draft-aad" ~ciphertext:sealed));
+              let sealed =
+                ok
+                  (Draft_hpke_04.seal_psk ~rng:generator suite ~recipient:public
+                     ~psk ~info:"" ~aad:"" ~plaintext:"")
+              in
+              Alcotest.(check string)
+                "draft PSK round trip" ""
+                (ok
+                   (Draft_hpke_04.open_psk suite ~recipient ~psk ~info:""
+                      ~aad:"" ~ciphertext:sealed));
+              (* The modes are bound: a PSK message does not open in Base. *)
+              expect_open_error "draft PSK message opened in Base mode"
+                (Draft_hpke_04.open_base suite ~recipient ~info:"" ~aad:""
+                   ~ciphertext:sealed))
+            all_aeads;
+          let exporter = Draft_hpke_04.Suite.export_only ~kem ~kdf in
+          let setup =
+            ok
+              (Draft_hpke_04.setup_base_sender ~rng:generator exporter
+                 ~recipient:public ~info:"export")
+          in
+          let receiver =
+            ok
+              (Draft_hpke_04.setup_base_receiver exporter ~recipient
+                 ~encapsulated_key:setup.encapsulated_key ~info:"export")
+          in
+          Alcotest.(check string)
+            "draft exports agree"
+            (ok (Rfc9180.Sender.export setup.context ~context:"c" ~length:64))
+            (ok (Rfc9180.Receiver.export receiver ~context:"c" ~length:64)))
+        Draft_hpke_04.Kdf.[ Shake128; Shake256 ])
+    all_kems
+
+(* With an HKDF the draft is RFC 9180: from the same randomness, the same
+   encapsulation, ciphertext and export. With SHAKE it is something else. *)
+let draft_hkdf_is_rfc9180 () =
+  let recipient, public =
+    ok (derive_key_pair Kem.X25519 ~ikm:(String.make 32 '\x31'))
+  in
+  let seal_with setup =
+    let (setup : _ Rfc9180.sender_setup) = ok setup in
+    ( setup.Rfc9180.encapsulated_key,
+      ok (Rfc9180.Sender.seal setup.context ~aad:"a" ~plaintext:"p"),
+      ok (Rfc9180.Sender.export setup.context ~context:"c" ~length:32) )
+  in
+  let randomness = String.make 32 '\x77' in
+  List.iter
+    (fun (draft_kdf, kdf) ->
+      let rfc =
+        seal_with
+          (Rfc9180.setup_base_sender ~rng:(fixed_rng randomness)
+             (Suite.create ~kem:Kem.X25519 ~kdf ~aead:Aead.Aes_128_gcm)
+             ~recipient:public ~info:"i")
+      in
+      let draft =
+        seal_with
+          (Draft_hpke_04.setup_base_sender ~rng:(fixed_rng randomness)
+             (Draft_hpke_04.Suite.create ~kem:Kem.X25519 ~kdf:draft_kdf
+                ~aead:Aead.Aes_128_gcm)
+             ~recipient:public ~info:"i")
+      in
+      Alcotest.(check bool)
+        "HKDF draft suite is the RFC 9180 suite" true (rfc = draft))
+    Draft_hpke_04.Kdf.
+      [
+        (Hkdf_sha256, Kdf.Hkdf_sha256);
+        (Hkdf_sha384, Kdf.Hkdf_sha384);
+        (Hkdf_sha512, Kdf.Hkdf_sha512);
+      ];
+  let shake =
+    ok
+      (Draft_hpke_04.setup_base_sender ~rng:(fixed_rng randomness)
+         (Draft_hpke_04.Suite.create ~kem:Kem.X25519
+            ~kdf:Draft_hpke_04.Kdf.Shake128 ~aead:Aead.Aes_128_gcm)
+         ~recipient:public ~info:"i")
+  in
+  let rfc =
+    ok
+      (Rfc9180.setup_base_sender ~rng:(fixed_rng randomness) x25519_aes_suite
+         ~recipient:public ~info:"i")
+  in
+  Alcotest.(check string)
+    "the KEM does not depend on the KDF" rfc.encapsulated_key
+    shake.encapsulated_key;
+  Alcotest.(check bool)
+    "SHAKE128 derives other keys" false
+    (ok (Rfc9180.Sender.seal shake.context ~aad:"a" ~plaintext:"p")
+    = ok (Rfc9180.Sender.seal rfc.context ~aad:"a" ~plaintext:"p"));
+  ignore recipient
+
+(* draft-ietf-hpke-hpke-04, Section 7.2.1: a one-stage KDF frames info, the PSK
+   and its identifier in two bytes, and an export's length in two bytes. *)
+let draft_one_stage_limits () =
+  let generator = rng () in
+  let recipient, public = ok (generate_key_pair ~rng:generator Kem.X25519) in
+  let suite =
+    Draft_hpke_04.Suite.create ~kem:Kem.X25519 ~kdf:Draft_hpke_04.Kdf.Shake256
+      ~aead:Aead.Chacha20_poly1305
+  in
+  let longest = String.make 0xffff 'i' and too_long = String.make 0x10000 'i' in
+  let setup =
+    ok
+      (Draft_hpke_04.setup_base_sender ~rng:generator suite ~recipient:public
+         ~info:longest)
+  in
+  let receiver =
+    ok
+      (Draft_hpke_04.setup_base_receiver suite ~recipient
+         ~encapsulated_key:setup.encapsulated_key ~info:longest)
+  in
+  Alcotest.(check string)
+    "65535-byte info" "m"
+    (ok
+       (Rfc9180.Receiver.open_ receiver ~aad:""
+          ~ciphertext:
+            (ok (Rfc9180.Sender.seal setup.context ~aad:"" ~plaintext:"m"))));
+  (match
+     Draft_hpke_04.setup_base_sender ~rng:generator suite ~recipient:public
+       ~info:too_long
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte info was accepted");
+  (match
+     Draft_hpke_04.setup_base_receiver suite ~recipient
+       ~encapsulated_key:setup.encapsulated_key ~info:too_long
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte info was accepted by the receiver");
+  expect_open_error "a 65536-byte info, single-shot"
+    (Draft_hpke_04.open_base suite ~recipient ~info:too_long ~aad:""
+       ~ciphertext:
+         {
+           Draft_hpke_04.encapsulated_key = setup.encapsulated_key;
+           ciphertext = "";
+         });
+  let long_psk = ok (Psk.create ~secret:too_long ~id:"id") in
+  (match
+     Draft_hpke_04.setup_psk_sender ~rng:generator suite ~recipient:public
+       ~psk:long_psk ~info:""
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte PSK was accepted");
+  let long_id = ok (Psk.create ~secret:(String.make 32 'k') ~id:too_long) in
+  (match
+     Draft_hpke_04.setup_psk_sender ~rng:generator suite ~recipient:public
+       ~psk:long_id ~info:""
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte PSK identifier was accepted");
+  let export length = Rfc9180.Sender.export setup.context ~context:"" ~length in
+  Alcotest.(check int)
+    "65535-byte export" 0xffff
+    (String.length (ok (export 0xffff)));
+  List.iter
+    (fun length ->
+      match export length with
+      | Error Error.Export_length_out_of_range -> ()
+      | _ -> Alcotest.failf "export of %d bytes" length)
+    [ -1; 0x10000 ];
+  (* An HKDF suite keeps RFC 9180's bound of 255 Nh and has no bound on info. *)
+  let hkdf =
+    Draft_hpke_04.Suite.create ~kem:Kem.X25519
+      ~kdf:Draft_hpke_04.Kdf.Hkdf_sha256 ~aead:Aead.Chacha20_poly1305
+  in
+  let setup =
+    ok
+      (Draft_hpke_04.setup_base_sender ~rng:generator hkdf ~recipient:public
+         ~info:too_long)
+  in
+  (match
+     Rfc9180.Sender.export setup.context ~context:"" ~length:((255 * 32) + 1)
+   with
+  | Error Error.Export_length_out_of_range -> ()
+  | _ -> Alcotest.fail "an HKDF export beyond 255 Nh");
+  (* A key of another KEM. *)
+  let p256, _ = ok (generate_key_pair ~rng:generator Kem.P256) in
+  expect_key_mismatch "draft recipient key of another KEM"
+    (Draft_hpke_04.setup_base_receiver suite ~recipient:p256
+       ~encapsulated_key:setup.encapsulated_key ~info:"");
+  expect_key_mismatch "draft recipient key of another KEM, single-shot"
+    (Draft_hpke_04.open_base suite ~recipient:p256 ~info:"" ~aad:""
+       ~ciphertext:{ Draft_hpke_04.encapsulated_key = ""; ciphertext = "" })
+
 let qcheck_round_trip =
   let generator = QCheck2.Gen.string_size (QCheck2.Gen.int_bound 1024) in
   QCheck2.Test.make ~name:"arbitrary binary messages round trip" ~count:100
@@ -2157,6 +2416,14 @@ let () =
           Alcotest.test_case "encapsulations" `Quick hybrid_encapsulations;
           Alcotest.test_case "rejection sampling" `Quick
             hybrid_rejection_sampling;
+        ] );
+      ( "draft-ietf-hpke-hpke-04",
+        [
+          Alcotest.test_case "KDF registry" `Quick draft_registry;
+          Alcotest.test_case "one-stage round trips" `Quick draft_round_trips;
+          Alcotest.test_case "HKDF suites are RFC 9180's" `Quick
+            draft_hkdf_is_rfc9180;
+          Alcotest.test_case "one-stage limits" `Quick draft_one_stage_limits;
         ] );
       ( "suite primitives",
         [

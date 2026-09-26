@@ -196,6 +196,9 @@ module Kdf = struct
     else Ok (expand_unchecked id ~prk ~info length)
 end
 
+(* [Draft_hpke_04] defines a [Kdf] of its own, and names this one so. *)
+module Hpke_kdf = Kdf
+
 module Aead = struct
   type id = Aes_128_gcm | Aes_256_gcm | Chacha20_poly1305
 
@@ -985,16 +988,24 @@ module Labeled_kdf = struct
     expand ~kdf:(kem_kdf kem) ~suite_id:(kem_suite_id kem) ~prk ~label ~info
       length
 
-  (* LabeledDerive of draft-ietf-hpke-hpke, Section 4.4, over the one-stage
-     SHAKE256 KDF of draft-ietf-hpke-pq, Section 5. Unlike the two-stage
-     functions above it puts the input first and frames the label with its
-     length. SHAKE256 is the one ML-KEM itself runs on, and the hybrids use it
-     too. *)
-  let kem_derive_shake256 kem ~label ~context ikm length =
-    Mlkem.Fips202.shake256 ~output_length:length
-      (ikm ^ version_label ^ kem_suite_id kem
+  (* LabeledDerive of draft-ietf-hpke-hpke, Section 4.4, over a one-stage KDF
+     [derive input length]. Unlike the two-stage functions above it puts the
+     input first and frames the label with its length. *)
+  let derive ~derive ~suite_id ~label ~context ikm length =
+    derive
+      (ikm ^ version_label ^ suite_id
       ^ Util.i2osp2 (String.length label)
       ^ label ^ Util.i2osp2 length ^ context)
+      length
+
+  (* LabeledDerive over the one-stage SHAKE256 KDF of draft-ietf-hpke-pq,
+     Section 5, with the KEM's suite_id. SHAKE256 is the one ML-KEM itself runs
+     on, and the hybrids use it too. *)
+  let kem_derive_shake256 kem ~label ~context ikm length =
+    derive
+      ~derive:(fun input length ->
+        Mlkem.Fips202.shake256 ~output_length:length input)
+      ~suite_id:(kem_suite_id kem) ~label ~context ikm length
 end
 
 let derive_key_pair_inner kem ~ikm =
@@ -1237,13 +1248,31 @@ let decap recipient ~sender ~encapsulated_key =
       let* () = mlkem_without_sender sender in
       Mlkem1024_p384_kem.decap secret encapsulated_key
 
+(* The one-stage KDFs of draft-ietf-hpke-pq, Section 5, which only the key
+   schedule of draft-ietf-hpke-hpke takes. [Derive(ikm, L)] is SHAKE itself
+   (FIPS 202), and [Nh] is the security strength. *)
+module One_stage_kdf = struct
+  type id = Shake128 | Shake256
+
+  let hash_size = function Shake128 -> 32 | Shake256 -> 64
+
+  let derive id input length =
+    match id with
+    | Shake128 -> Mlkem.Fips202.shake128 ~output_length:length input
+    | Shake256 -> Mlkem.Fips202.shake256 ~output_length:length input
+end
+
+(* The KDF a context exports with: an RFC 9180 HKDF, or a one-stage KDF, which
+   only [Draft_hpke_04] sets up. *)
+type schedule_kdf = Two_stage of Kdf.id | One_stage of One_stage_kdf.id
+
 module Rfc9180 = struct
   type encryption_state = {
     aead : Aead.id;
     key : Aead.key;
     base_nonce : string;
     exporter_secret : string;
-    kdf : Kdf.id;
+    kdf : schedule_kdf;
     suite_id : string;
     sequence : bytes;
     busy : bool Atomic.t;
@@ -1251,7 +1280,7 @@ module Rfc9180 = struct
 
   type export_state = {
     exporter_secret : string;
-    kdf : Kdf.id;
+    kdf : schedule_kdf;
     suite_id : string;
   }
 
@@ -1269,17 +1298,31 @@ module Rfc9180 = struct
         }
     | Export_context state -> state
 
+  (* A one-stage KDF frames [L] in two bytes (draft-ietf-hpke-hpke, Section
+     5.3), and has no other limit on it. *)
   let export context ~context:exporter_context ~length =
     let state = exporter_data context in
-    if length < 0 || length > 255 * Kdf.hash_size state.kdf then
-      Error Error.Export_length_out_of_range
-    else
-      try
-        Ok
-          (Labeled_kdf.expand ~kdf:state.kdf ~suite_id:state.suite_id
-             ~prk:state.exporter_secret ~label:"sec" ~info:exporter_context
-             length)
-      with Invalid_argument reason -> Error (Error.Internal_error reason)
+    match state.kdf with
+    | Two_stage kdf -> (
+        if length < 0 || length > 255 * Kdf.hash_size kdf then
+          Error Error.Export_length_out_of_range
+        else
+          try
+            Ok
+              (Labeled_kdf.expand ~kdf ~suite_id:state.suite_id
+                 ~prk:state.exporter_secret ~label:"sec" ~info:exporter_context
+                 length)
+          with Invalid_argument reason -> Error (Error.Internal_error reason))
+    | One_stage kdf -> (
+        if length < 0 || length > 0xffff then
+          Error Error.Export_length_out_of_range
+        else
+          try
+            Ok
+              (Labeled_kdf.derive ~derive:(One_stage_kdf.derive kdf)
+                 ~suite_id:state.suite_id ~label:"sec" ~context:exporter_context
+                 state.exporter_secret length)
+          with Invalid_argument reason -> Error (Error.Internal_error reason))
 
   let sequence_exhausted sequence =
     let exhausted = ref true in
@@ -1449,7 +1492,8 @@ module Rfc9180 = struct
         ~info:key_schedule_context (Kdf.hash_size kdf)
     in
     match suite with
-    | Suite.Export_only _ -> Export_context { exporter_secret; kdf; suite_id }
+    | Suite.Export_only _ ->
+        Export_context { exporter_secret; kdf = Two_stage kdf; suite_id }
     | Suite.Encryption suite_details ->
         let key =
           Labeled_kdf.expand ~kdf ~suite_id ~prk:secret ~label:"key"
@@ -1474,7 +1518,7 @@ module Rfc9180 = struct
             key;
             base_nonce;
             exporter_secret;
-            kdf;
+            kdf = Two_stage kdf;
             suite_id;
             sequence = Bytes.make 12 '\000';
             busy = Atomic.make false;
@@ -1638,4 +1682,270 @@ module Private = struct
     Rfc9180.setup_sender_with_ephemeral ~ephemeral suite ~recipient
       ~mode:(Rfc9180.Auth_psk (sender, psk))
       ~info
+end
+
+module Draft_hpke_04 = struct
+  module Kdf = struct
+    type id = Hkdf_sha256 | Hkdf_sha384 | Hkdf_sha512 | Shake128 | Shake256
+
+    let to_int = function
+      | Hkdf_sha256 -> 0x0001
+      | Hkdf_sha384 -> 0x0002
+      | Hkdf_sha512 -> 0x0003
+      | Shake128 -> 0x0010
+      | Shake256 -> 0x0011
+
+    let of_int = function
+      | 0x0001 -> Ok Hkdf_sha256
+      | 0x0002 -> Ok Hkdf_sha384
+      | 0x0003 -> Ok Hkdf_sha512
+      | 0x0010 -> Ok Shake128
+      | 0x0011 -> Ok Shake256
+      | id -> Error (Error.Unsupported_algorithm id)
+
+    let pp ppf = function
+      | Hkdf_sha256 -> Format.pp_print_string ppf "HKDF-SHA256"
+      | Hkdf_sha384 -> Format.pp_print_string ppf "HKDF-SHA384"
+      | Hkdf_sha512 -> Format.pp_print_string ppf "HKDF-SHA512"
+      | Shake128 -> Format.pp_print_string ppf "SHAKE128"
+      | Shake256 -> Format.pp_print_string ppf "SHAKE256"
+
+    (* How the key schedule runs the KDF: two-stage as RFC 9180 does, or one
+       stage. *)
+    let schedule = function
+      | Hkdf_sha256 -> Two_stage Hpke_kdf.Hkdf_sha256
+      | Hkdf_sha384 -> Two_stage Hpke_kdf.Hkdf_sha384
+      | Hkdf_sha512 -> Two_stage Hpke_kdf.Hkdf_sha512
+      | Shake128 -> One_stage One_stage_kdf.Shake128
+      | Shake256 -> One_stage One_stage_kdf.Shake256
+
+    let two_stage id =
+      match schedule id with Two_stage kdf -> Some kdf | One_stage _ -> None
+
+    let hash_size id =
+      match schedule id with
+      | Two_stage kdf -> Hpke_kdf.hash_size kdf
+      | One_stage kdf -> One_stage_kdf.hash_size kdf
+
+    let derive id ikm length =
+      match schedule id with
+      | Two_stage _ -> Error (Error.Unsupported_algorithm (to_int id))
+      | One_stage kdf ->
+          if length < 0 then
+            Error (Error.Invalid_length "the output length is negative")
+          else Ok (One_stage_kdf.derive kdf ikm length)
+  end
+
+  module Suite = struct
+    type encryption = Suite.encryption
+    type export_only = Suite.export_only
+
+    type _ t =
+      | Encryption : {
+          kem : Kem.id;
+          kdf : Kdf.id;
+          aead : Aead.id;
+        }
+          -> encryption t
+      | Export_only : { kem : Kem.id; kdf : Kdf.id } -> export_only t
+
+    let create ~kem ~kdf ~aead = Encryption { kem; kdf; aead }
+    let export_only ~kem ~kdf = Export_only { kem; kdf }
+
+    let kem : type capability. capability t -> Kem.id = function
+      | Encryption suite -> suite.kem
+      | Export_only suite -> suite.kem
+
+    let kdf : type capability. capability t -> Kdf.id = function
+      | Encryption suite -> suite.kdf
+      | Export_only suite -> suite.kdf
+
+    let[@warning "-8"] aead (Encryption suite) = suite.aead
+
+    (* With a two-stage KDF the draft's Base and PSK modes are RFC 9180's, so
+       such a suite is run as the RFC 9180 suite it names. *)
+    let rfc9180 : type capability.
+        capability t -> Hpke_kdf.id -> capability Suite.t =
+     fun suite kdf ->
+      match suite with
+      | Encryption suite -> Suite.create ~kem:suite.kem ~kdf ~aead:suite.aead
+      | Export_only suite -> Suite.export_only ~kem:suite.kem ~kdf
+
+    let suite_id : type capability. capability t -> string =
+     fun suite ->
+      let aead_id =
+        match suite with
+        | Encryption suite -> Aead.to_int suite.aead
+        | Export_only _ -> 0xffff
+      in
+      "HPKE"
+      ^ Util.i2osp2 (Kem.to_int (kem suite))
+      ^ Util.i2osp2 (Kdf.to_int (kdf suite))
+      ^ Util.i2osp2 aead_id
+  end
+
+  module Sender = Rfc9180.Sender
+  module Receiver = Rfc9180.Receiver
+
+  type 'capability sender_setup = 'capability Rfc9180.sender_setup = {
+    encapsulated_key : string;
+    context : 'capability Sender.t;
+  }
+
+  type ciphertext = Rfc9180.ciphertext = {
+    encapsulated_key : string;
+    ciphertext : string;
+  }
+
+  (* lengthPrefixed (draft-ietf-hpke-hpke, Section 5.1), which bounds [psk],
+     [psk_id] and [info] at 65535 bytes (Section 7.2.1). *)
+  let length_prefixed name value =
+    if String.length value > 0xffff then
+      Error (Error.Invalid_length (name ^ " is longer than 65535 bytes"))
+    else Ok (Util.i2osp2 (String.length value) ^ value)
+
+  (* [Nk] and [Nn] of the suite, zero for export-only (Section 7.3). *)
+  let key_nonce_sizes : type capability. capability Suite.t -> int * int =
+    function
+    | Suite.Encryption suite ->
+        (Aead.key_size suite.aead, Aead.nonce_size suite.aead)
+    | Suite.Export_only _ -> (0, 0)
+
+  (* The context of [secret], split into [key], [base_nonce] and
+     [exporter_secret]. *)
+  let one_stage_context : type capability.
+      capability Suite.t ->
+      One_stage_kdf.id ->
+      suite_id:string ->
+      string ->
+      capability Rfc9180.context =
+   fun suite kdf ~suite_id secret ->
+    let nk, nn = key_nonce_sizes suite in
+    let exporter_secret =
+      String.sub secret (nk + nn) (One_stage_kdf.hash_size kdf)
+    in
+    match suite with
+    | Suite.Export_only _ ->
+        Rfc9180.Export_context
+          { exporter_secret; kdf = One_stage kdf; suite_id }
+    | Suite.Encryption suite ->
+        let aead = suite.aead in
+        (* Expanded here, once, as [Rfc9180.key_schedule] does. *)
+        let key =
+          {
+            Aead.id = aead;
+            expanded = Aead.expand aead (String.sub secret 0 nk);
+          }
+        in
+        Rfc9180.Encryption_context
+          {
+            aead;
+            key;
+            base_nonce = String.sub secret nk nn;
+            exporter_secret;
+            kdf = One_stage kdf;
+            suite_id;
+            sequence = Bytes.make 12 '\000';
+            busy = Atomic.make false;
+          }
+
+  (* CombineSecrets_OneStage and KeySchedule<ROLE> (Section 5.1). [psk] is the
+     PSK of the PSK mode; VerifyPSKInputs holds by construction. *)
+  let one_stage_schedule suite kdf ~psk ~shared_secret ~info =
+    let mode, psk_secret, psk_id =
+      match psk with
+      | None -> (Util.byte 0, "", "")
+      | Some psk -> (Util.byte 1, psk.Psk.secret, psk.Psk.id)
+    in
+    let* prefixed_psk = length_prefixed "the PSK" psk_secret in
+    let* prefixed_secret = length_prefixed "the shared secret" shared_secret in
+    let* prefixed_psk_id = length_prefixed "the PSK identifier" psk_id in
+    let* prefixed_info = length_prefixed "info" info in
+    let suite_id = Suite.suite_id suite in
+    let nk, nn = key_nonce_sizes suite in
+    let secret =
+      Labeled_kdf.derive ~derive:(One_stage_kdf.derive kdf) ~suite_id
+        ~label:"secret"
+        ~context:(mode ^ prefixed_psk_id ^ prefixed_info)
+        (prefixed_psk ^ prefixed_secret)
+        (nk + nn + One_stage_kdf.hash_size kdf)
+    in
+    Ok (one_stage_context suite kdf ~suite_id secret)
+
+  let check_kem suite kem =
+    if Suite.kem suite = kem then Ok () else Error Error.Key_mismatch
+
+  let one_stage_sender ~rng suite kdf ~recipient ~psk ~info =
+    try
+      let* () = check_kem suite (Public_key.kem recipient) in
+      let* shared_secret, encapsulated_key =
+        encap ~rng ~sender:None recipient
+      in
+      let* context = one_stage_schedule suite kdf ~psk ~shared_secret ~info in
+      Ok { encapsulated_key; context = Rfc9180.Sender.Sender context }
+    with Invalid_argument reason -> Error (Error.Invalid_length reason)
+
+  let one_stage_receiver suite kdf ~recipient ~psk ~encapsulated_key ~info =
+    try
+      let* () = check_kem suite (Private_key.kem recipient) in
+      let* shared_secret = decap recipient ~sender:None ~encapsulated_key in
+      let* context = one_stage_schedule suite kdf ~psk ~shared_secret ~info in
+      Ok (Rfc9180.Receiver.Receiver context)
+    with Invalid_argument reason -> Error (Error.Invalid_length reason)
+
+  let setup_sender ~rng suite ~recipient ~psk ~info =
+    match Kdf.schedule (Suite.kdf suite) with
+    | Two_stage kdf -> (
+        let suite = Suite.rfc9180 suite kdf in
+        match psk with
+        | None -> Rfc9180.setup_base_sender ~rng suite ~recipient ~info
+        | Some psk -> Rfc9180.setup_psk_sender ~rng suite ~recipient ~psk ~info)
+    | One_stage kdf -> one_stage_sender ~rng suite kdf ~recipient ~psk ~info
+
+  let setup_receiver suite ~recipient ~psk ~encapsulated_key ~info =
+    match Kdf.schedule (Suite.kdf suite) with
+    | Two_stage kdf -> (
+        let suite = Suite.rfc9180 suite kdf in
+        match psk with
+        | None ->
+            Rfc9180.setup_base_receiver suite ~recipient ~encapsulated_key ~info
+        | Some psk ->
+            Rfc9180.setup_psk_receiver suite ~recipient ~psk ~encapsulated_key
+              ~info)
+    | One_stage kdf ->
+        one_stage_receiver suite kdf ~recipient ~psk ~encapsulated_key ~info
+
+  let setup_base_sender ~rng suite ~recipient ~info =
+    setup_sender ~rng suite ~recipient ~psk:None ~info
+
+  let setup_base_receiver suite ~recipient ~encapsulated_key ~info =
+    setup_receiver suite ~recipient ~psk:None ~encapsulated_key ~info
+
+  let setup_psk_sender ~rng suite ~recipient ~psk ~info =
+    setup_sender ~rng suite ~recipient ~psk:(Some psk) ~info
+
+  let setup_psk_receiver suite ~recipient ~psk ~encapsulated_key ~info =
+    setup_receiver suite ~recipient ~psk:(Some psk) ~encapsulated_key ~info
+
+  let seal_base ~rng suite ~recipient ~info ~aad ~plaintext =
+    Rfc9180.seal_once
+      (setup_base_sender ~rng suite ~recipient ~info)
+      ~aad ~plaintext
+
+  let open_base suite ~recipient ~info ~aad ~ciphertext =
+    Rfc9180.normalized_open
+      (setup_base_receiver suite ~recipient
+         ~encapsulated_key:ciphertext.encapsulated_key ~info)
+      ~aad ~ciphertext:ciphertext.ciphertext
+
+  let seal_psk ~rng suite ~recipient ~psk ~info ~aad ~plaintext =
+    Rfc9180.seal_once
+      (setup_psk_sender ~rng suite ~recipient ~psk ~info)
+      ~aad ~plaintext
+
+  let open_psk suite ~recipient ~psk ~info ~aad ~ciphertext =
+    Rfc9180.normalized_open
+      (setup_psk_receiver suite ~recipient ~psk
+         ~encapsulated_key:ciphertext.encapsulated_key ~info)
+      ~aad ~ciphertext:ciphertext.ciphertext
 end

@@ -501,6 +501,164 @@ module Rfc9180 : sig
   *)
 end
 
+module Draft_hpke_04 : sig
+  (** The successor of RFC 9180 as [draft-ietf-hpke-hpke-04] specifies it, with
+      the one-stage SHA-3 KDFs of [draft-ietf-hpke-pq-05], Section 5.
+
+      This is a separate, versioned module, so that {!Rfc9180} keeps its wire
+      behavior: nothing here changes what an {!Rfc9180} function does. The draft
+      is not yet an RFC, and this module follows revision 04 of it; a later
+      revision that changes the wire gets a module of its own.
+
+      The draft is RFC 9180 without the Auth and AuthPSK modes, and with a
+      second kind of KDF. With an HKDF a suite runs the RFC 9180 Base and PSK
+      modes unchanged, so its keys, encapsulations, ciphertexts and exports are
+      those of {!Rfc9180}. With a one-stage KDF, SHAKE128 or SHAKE256, the key
+      schedule derives the key, base nonce and exporter secret in one call of
+      [LabeledDerive], and so does {!Sender.export}. Every KEM works with every
+      KDF, those of the draft included. TurboSHAKE128 and TurboSHAKE256
+      ([0x0012] and [0x0013]) are not provided yet.
+
+      Keys, KEMs, AEADs, PSKs, errors and contexts are those of the rest of the
+      library. {!Private_key.to_bytes} clamps X25519 and X448 keys, where the
+      draft serializes them unclamped; both describe the same key pair.
+
+      With a one-stage KDF, [info], a PSK and its identifier may each hold at
+      most 65535 bytes (Section 7.2.1), and a longer one is
+      {!Error.Invalid_length}. An export may be up to 65535 bytes long. *)
+
+  module Kdf : sig
+    (** The KDF registry of [draft-ietf-hpke-hpke-04] and
+        [draft-ietf-hpke-pq-05]: the HKDFs of RFC 9180, which are two-stage, and
+        the one-stage SHAKE128 ([0x0010]) and SHAKE256 ([0x0011]). *)
+    type id = Hkdf_sha256 | Hkdf_sha384 | Hkdf_sha512 | Shake128 | Shake256
+
+    val to_int : id -> int
+    val of_int : int -> (id, Error.t) result
+    val pp : Format.formatter -> id -> unit
+
+    val hash_size : id -> int
+    (** [Nh]: the output length of [Extract] for an HKDF, and the security
+        strength in bytes for a one-stage KDF, 32 for SHAKE128 and 64 for
+        SHAKE256. *)
+
+    val two_stage : id -> Kdf.id option
+    (** The RFC 9180 KDF of a two-stage KDF, whose {!Hpke.Kdf.extract} and
+        {!Hpke.Kdf.expand} are its [Extract] and [Expand]; [None] for a
+        one-stage KDF. *)
+
+    val derive : id -> string -> int -> (string, Error.t) result
+    (** [derive id ikm length] is the unlabeled [Derive(ikm, L)] of a one-stage
+        KDF, for protocols layered on HPKE: SHAKE128 or SHAKE256 of [ikm], cut
+        to [length] bytes. Returns {!Error.Unsupported_algorithm} for a
+        two-stage KDF, and {!Error.Invalid_length} for a negative [length]. *)
+  end
+
+  module Suite : sig
+    type encryption = Suite.encryption
+    type export_only = Suite.export_only
+
+    type _ t
+    (** A ciphersuite of this module. Its capabilities are those of
+        {!Hpke.Suite}, so that its contexts are those of {!Rfc9180}. *)
+
+    val create : kem:Kem.id -> kdf:Kdf.id -> aead:Aead.id -> encryption t
+    val export_only : kem:Kem.id -> kdf:Kdf.id -> export_only t
+    val kem : _ t -> Kem.id
+    val kdf : _ t -> Kdf.id
+    val aead : encryption t -> Aead.id
+  end
+
+  module Sender = Rfc9180.Sender
+  module Receiver = Rfc9180.Receiver
+
+  type 'capability sender_setup = 'capability Rfc9180.sender_setup = {
+    encapsulated_key : string;
+    context : 'capability Sender.t;
+  }
+
+  type ciphertext = Rfc9180.ciphertext = {
+    encapsulated_key : string;
+    ciphertext : string;
+  }
+
+  val setup_base_sender :
+    rng:Mirage_crypto_rng.g ->
+    'capability Suite.t ->
+    recipient:Public_key.t ->
+    info:string ->
+    ('capability sender_setup, Error.t) result
+  (** As {!Rfc9180.setup_base_sender}. Returns {!Error.Key_mismatch} unless the
+      suite and the key share one KEM. *)
+
+  val setup_base_receiver :
+    'capability Suite.t ->
+    recipient:Private_key.t ->
+    encapsulated_key:string ->
+    info:string ->
+    ('capability Receiver.t, Error.t) result
+  (** As {!Rfc9180.setup_base_receiver}. *)
+
+  val setup_psk_sender :
+    rng:Mirage_crypto_rng.g ->
+    'capability Suite.t ->
+    recipient:Public_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    ('capability sender_setup, Error.t) result
+  (** As {!Rfc9180.setup_psk_sender}. *)
+
+  val setup_psk_receiver :
+    'capability Suite.t ->
+    recipient:Private_key.t ->
+    psk:Psk.t ->
+    encapsulated_key:string ->
+    info:string ->
+    ('capability Receiver.t, Error.t) result
+  (** As {!Rfc9180.setup_psk_receiver}. *)
+
+  val seal_base :
+    rng:Mirage_crypto_rng.g ->
+    Suite.encryption Suite.t ->
+    recipient:Public_key.t ->
+    info:string ->
+    aad:string ->
+    plaintext:string ->
+    (ciphertext, Error.t) result
+  (** As {!Rfc9180.seal_base}. *)
+
+  val open_base :
+    Suite.encryption Suite.t ->
+    recipient:Private_key.t ->
+    info:string ->
+    aad:string ->
+    ciphertext:ciphertext ->
+    (string, Error.t) result
+  (** As {!Rfc9180.open_base}: every failure other than {!Error.Key_mismatch} is
+      {!Error.Open_error}. *)
+
+  val seal_psk :
+    rng:Mirage_crypto_rng.g ->
+    Suite.encryption Suite.t ->
+    recipient:Public_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    aad:string ->
+    plaintext:string ->
+    (ciphertext, Error.t) result
+  (** As {!Rfc9180.seal_psk}. *)
+
+  val open_psk :
+    Suite.encryption Suite.t ->
+    recipient:Private_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    aad:string ->
+    ciphertext:ciphertext ->
+    (string, Error.t) result
+  (** As {!Rfc9180.open_psk}. *)
+end
+
 (**/**)
 
 module Private : sig

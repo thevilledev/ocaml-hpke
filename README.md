@@ -29,17 +29,18 @@ Usage, ciphersuites, the security model, and development notes:
 | Component | Algorithms |
 | --- | --- |
 | KEM | P-256, P-384, P-521, X25519, X448 DHKEM; ML-KEM-512, ML-KEM-768, ML-KEM-1024; MLKEM768-P256, MLKEM768-X25519 (X-Wing), MLKEM1024-P384 |
-| KDF | HKDF-SHA-256, HKDF-SHA-384, HKDF-SHA-512 |
+| KDF | HKDF-SHA-256, HKDF-SHA-384, HKDF-SHA-512; SHAKE128, SHAKE256 in `Hpke.Draft_hpke_04` |
 | AEAD | AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305, export-only |
-| Modes | RFC 9180 Base, PSK, Auth, and AuthPSK; ML-KEM and the hybrids have the first two |
+| Modes | RFC 9180 Base, PSK, Auth, and AuthPSK; ML-KEM and the hybrids have the first two; `Hpke.Draft_hpke_04` has the first two |
 
 | Feature scope | Status |
 | --- | --- |
 | RFC 9180 Base, PSK, Auth, AuthPSK, export-only, and the algorithms above | Implemented |
 | Post-quantum ML-KEM KEMs of `draft-ietf-hpke-pq`, in the Base and PSK modes | Implemented |
 | Post-quantum/traditional hybrid KEMs of the same draft, in the Base and PSK modes | Implemented |
-| SHA-3 KDFs of the same draft | Deferred |
-| HPKE-bis or another successor standard | Deferred to a new versioned module |
+| `draft-ietf-hpke-hpke-04`, the successor draft, in `Hpke.Draft_hpke_04` | Implemented |
+| SHAKE128 and SHAKE256 KDFs of `draft-ietf-hpke-pq`, in `Hpke.Draft_hpke_04` | Implemented |
+| TurboSHAKE128 and TurboSHAKE256 KDFs of the same draft | Deferred until `mlkem` provides TurboSHAKE |
 | Application wire framing | Deferred to applications |
 
 The deferred features are intentionally out of scope for now. They do not
@@ -139,6 +140,32 @@ follows from the second half:
 Neither draft is an RFC yet, and `derive_key_pair` changes if they do. The
 three hybrids reproduce every vector of `draft-ietf-hpke-pq-05` that uses an
 HKDF: see [test-vectors/PROVENANCE.md](test-vectors/PROVENANCE.md).
+
+## The successor draft and SHA-3 KDFs
+
+`Hpke.Draft_hpke_04` is HPKE as
+[`draft-ietf-hpke-hpke-04`](https://datatracker.ietf.org/doc/draft-ietf-hpke-hpke/)
+specifies it, a separate versioned module so that `Hpke.Rfc9180` keeps its wire
+behavior. The draft is RFC 9180 without the Auth and AuthPSK modes and with a
+second kind of KDF, the one-stage KDFs, of which it offers SHAKE128 and
+SHAKE256 from `draft-ietf-hpke-pq`. It has a KDF registry and suites of its own,
+and shares keys, KEMs, AEADs, PSKs and contexts with the rest of the library:
+
+```ocaml
+let suite =
+  Draft_hpke_04.Suite.create ~kem:Kem.Mlkem768_x25519
+    ~kdf:Draft_hpke_04.Kdf.Shake256 ~aead:Aead.Chacha20_poly1305
+in
+Draft_hpke_04.seal_base ~rng suite ~recipient ~info ~aad ~plaintext
+```
+
+With an HKDF a suite of this module is the RFC 9180 suite of the same
+identifiers: it produces the same encapsulations, ciphertexts and exports. With
+SHAKE the key schedule derives the key, base nonce and exporter secret in one
+`LabeledDerive`, `info`, a PSK and its identifier may each hold at most 65535
+bytes, and so may an export. TurboSHAKE is not provided until `mlkem` offers it.
+The draft is not yet an RFC; a revision that changes the wire gets a module of
+its own.
 
 ## Example
 

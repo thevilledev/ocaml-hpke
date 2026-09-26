@@ -108,7 +108,7 @@ let state ~base_nonce ~sequence =
     key;
     base_nonce;
     exporter_secret = "";
-    kdf = H.Kdf.Hkdf_sha256;
+    kdf = H.Two_stage H.Kdf.Hkdf_sha256;
     suite_id = "";
     sequence;
     busy = Atomic.make false;

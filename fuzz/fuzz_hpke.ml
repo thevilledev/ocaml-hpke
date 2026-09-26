@@ -238,6 +238,62 @@ let () =
           | Ok _ ->
               Crowbar.failf "%s opened under a fuzzed encapsulation"
                 suite_case.name));
+  (* Hpke.Draft_hpke_04 with a one-stage KDF: arbitrary encapsulations, info,
+     PSK identifiers and ciphertexts reach the one-stage key schedule. Only a
+     malformed encapsulation or an overlong input is refused before the open,
+     and nothing opens. *)
+  let draft_cases =
+    let generator = rng () in
+    List.concat_map
+      (fun kem ->
+        let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+        List.map
+          (fun kdf ->
+            let suite =
+              Draft_hpke_04.Suite.create ~kem ~kdf ~aead:Aead.Aes_128_gcm
+            in
+            let setup =
+              ok
+                (Draft_hpke_04.setup_base_sender ~rng:generator suite
+                   ~recipient:public ~info:"")
+            in
+            (kem, suite, recipient, setup.encapsulated_key))
+          Draft_hpke_04.Kdf.[ Shake128; Shake256 ])
+      all_kems
+  in
+  Crowbar.add_test ~name:"draft one-stage receivers"
+    [
+      Crowbar.range (List.length draft_cases);
+      Crowbar.bool;
+      Crowbar.bytes;
+      Crowbar.bytes;
+      Crowbar.bytes;
+    ]
+    (fun selector psk_mode encoding info ciphertext ->
+      let kem, suite, recipient, encapsulated_key =
+        List.nth draft_cases selector
+      in
+      let encapsulated_key =
+        if String.length encoding = 0 then encapsulated_key
+        else fit (Kem.encapsulated_key_size kem) encoding
+      in
+      let setup =
+        if psk_mode then
+          Draft_hpke_04.setup_psk_receiver suite ~recipient
+            ~psk:(fuzz_psk info info) ~encapsulated_key ~info
+        else
+          Draft_hpke_04.setup_base_receiver suite ~recipient ~encapsulated_key
+            ~info
+      in
+      match setup with
+      | Error (Error.Invalid_encapsulation _) -> ()
+      | Error error -> Crowbar.failf "draft receiver: %a" Error.pp error
+      | Ok receiver -> (
+          ignore (Rfc9180.Receiver.export receiver ~context:info ~length:32);
+          match Rfc9180.Receiver.open_ receiver ~aad:"" ~ciphertext with
+          | Error Error.Open_error -> ()
+          | Error error -> Crowbar.failf "draft open: %a" Error.pp error
+          | Ok _ -> Crowbar.fail "a fuzzed ciphertext opened"));
   Crowbar.add_test ~name:"sender keys"
     [ Crowbar.range (List.length suite_cases); Crowbar.bytes; Crowbar.bytes ]
     (fun selector encoding ciphertext ->

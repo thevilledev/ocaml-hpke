@@ -199,6 +199,46 @@ let exporter =
         <code>Export_length_out_of_range</code> rather than a truncated answer.
       </p>
 
+      <h3 id="one-stage">One-stage KDFs</h3>
+
+      <p>
+        <code>Hpke.Draft_hpke_04</code>, the <a href="#versioning">module of
+        the successor draft</a>, has a KDF registry of its own: the three HKDFs
+        above, with which its suites are the RFC 9180 suites of the same
+        identifiers, and the one-stage SHAKE KDFs of
+        <code>draft-ietf-hpke-pq</code>, which exist only in the successor's key
+        schedule.
+      </p>
+
+      <div class="table-scroll">
+        <table>
+          <caption>One-stage KDFs of <code>Draft_hpke_04</code></caption>
+          <thead>
+            <tr>
+              <th scope="col">Constructor</th>
+              <th scope="col">Name</th>
+              <th scope="col" class="n">ID</th>
+              <th scope="col" class="n">Nh</th>
+              <th scope="col" class="n">Longest export</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>Draft_hpke_04.Kdf.Shake128</code></td><td>SHAKE128</td><td class="n">0x0010</td><td class="n">32</td><td class="n">65,535</td></tr>
+            <tr><td><code>Draft_hpke_04.Kdf.Shake256</code></td><td>SHAKE256</td><td class="n">0x0011</td><td class="n">64</td><td class="n">65,535</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="fine">
+        <code>Nh</code> is the security strength in bytes. The key schedule
+        derives the key, base nonce and exporter secret in one
+        <code>LabeledDerive</code>, which frames <code>info</code>, the PSK and
+        its identifier, and an export's length, in two bytes each: a longer one
+        is <code>Invalid_length</code> or <code>Export_length_out_of_range</code>.
+        TurboSHAKE128 and TurboSHAKE256 (<code>0x0012</code> and
+        <code>0x0013</code>) wait for <code>mlkem</code> to provide TurboSHAKE.
+      </p>
+
       <h2 id="aead">AEAD</h2>
 
       <div class="table-scroll">
@@ -262,10 +302,11 @@ let exporter =
           uncompressed SEC1 form, which is what RFC 9180 specifies.
         </li>
         <li>
-          <strong>SHA-3 KDFs.</strong>
-          <code>draft-ietf-hpke-pq</code> also defines SHAKE and TurboSHAKE
-          KDFs. They rest on the one-stage key schedule of the successor
-          standard, which belongs in its <a href="#versioning">own module</a>.
+          <strong>TurboSHAKE KDFs.</strong>
+          <code>draft-ietf-hpke-pq</code> also defines TurboSHAKE128 and
+          TurboSHAKE256, which take a Keccak permutation of 12 rounds that
+          neither <code>mlkem</code> nor Digestif provides yet. The library
+          implements no primitive of its own.
         </li>
         <li>
           <strong>Expanded ML-KEM private keys.</strong> Only the 64-byte seed
@@ -313,8 +354,16 @@ let exporter =
       <p>
         The successor draft, <code>draft-ietf-hpke-hpke</code>, removes the
         Auth and AuthPSK modes and reserves their identifiers. They stay in
-        <code>Hpke.Rfc9180</code>; a module for the successor standard would
-        not offer them.
+        <code>Hpke.Rfc9180</code>; the successor's module does not offer them.
+      </p>
+
+      <p>
+        That module is <code>Hpke.Draft_hpke_04</code>, revision 04 of the
+        draft. It offers the Base and PSK modes, over every KEM, and the
+        <a href="#one-stage">one-stage KDFs</a>. It shares keys, AEADs, PSKs
+        and contexts with <code>Hpke.Rfc9180</code>, and with an HKDF produces
+        exactly what <code>Hpke.Rfc9180</code> does. A revision of the draft
+        that changes the wire gets a module of its own.
       </p>
     </main>
 
