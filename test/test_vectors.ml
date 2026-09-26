@@ -77,14 +77,19 @@ let serialized_private_key kem encoded =
          canonical X25519 and X448 private keys after clamping. *)
       Private_key.of_bytes ~kem (hex encoded) |> ok |> Private_key.to_bytes
   | Kem.P256 | Kem.P384 | Kem.P521 -> hex encoded
-  (* An ML-KEM private key is serialized as the seed it was derived as. *)
-  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 -> hex encoded
+  (* An ML-KEM or hybrid private key is serialized as the seed it was derived
+     as. *)
+  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+  | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
+      hex encoded
 
 (* A Diffie-Hellman KEM encapsulates with an ephemeral key pair, which its
-   vectors publish. ML-KEM encapsulates from randomness alone. *)
+   vectors publish. ML-KEM and the hybrids encapsulate from randomness alone. *)
 let has_ephemeral_key = function
   | Kem.P256 | Kem.P384 | Kem.P521 | Kem.X25519 | Kem.X448 -> true
-  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 -> false
+  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 | Kem.Mlkem768_p256
+  | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
+      false
 
 let derive_key_pair_of vector kem ~role ~ikm_field ~sk_field ~pk_field =
   let derived_private, derived_public =
@@ -174,8 +179,9 @@ let check_exports vector sender receiver =
         (ok (Rfc9180.Receiver.export receiver ~context ~length)))
 
 (* The private and the public key are also parsed from their published
-   encodings, which for ML-KEM takes another path than deriving them: the seed
-   is expanded as it is, and the encapsulation key is validated and expanded. *)
+   encodings, which for ML-KEM and the hybrids takes another path than deriving
+   them: the seed is expanded as it is, and the encapsulation key is validated
+   and expanded. *)
 let check_parsed_keys vector kem (recipient, recipient_public) =
   let parsed = ok (Private_key.of_bytes ~kem (member_hex "skRm" vector)) in
   Alcotest.(check string)
@@ -453,8 +459,8 @@ let test_pq_parsed_keys vector =
    the key schedule, and none of what lies between. Running the RFC 9180 key
    schedule from the one to the others, over the public Kdf.extract and
    Kdf.expand, shows that an ML-KEM suite with an HKDF uses that key schedule
-   unchanged, and makes the published values known answers for both
-   functions. *)
+   unchanged, as does a hybrid suite, and makes the published values known
+   answers for both functions. *)
 let test_pq_key_schedule vector =
   let kdf = kdf vector in
   let aead = member_int "aead_id" vector |> Aead.of_int |> ok in
@@ -493,9 +499,9 @@ let test_pq_key_schedule vector =
     (member_string "exporter_secret" vector)
     (labeled_expand "exp" (Kdf.hash_size kdf))
 
-(* An ML-KEM key pair and encapsulation depend on nothing else in the suite, so
-   a vector whose KDF this library lacks is still a known answer for both. The
-   suite here only carries the KEM. *)
+(* An ML-KEM or hybrid key pair and encapsulation depend on nothing else in the
+   suite, so a vector whose KDF this library lacks is still a known answer for
+   both. The suite here only carries the KEM. *)
 let test_pq_kem_only vector =
   let kem = kem vector in
   let derived =
@@ -513,6 +519,118 @@ let test_pq_kem_only vector =
   check_hex "encapsulated key"
     (member_string "enc" vector)
     sender.encapsulated_key
+
+(* Hpke.Draft_hpke_04. The draft is RFC 9180 without the Auth and AuthPSK modes,
+   so a Base or PSK vector of either is a vector of it; so are the
+   draft-ietf-hpke-pq vectors, the SHAKE ones included. The recipient's key pair
+   is derived, and the ephemeral one reproduced from ikmE, as above. *)
+let draft_kdf vector =
+  member_int "kdf_id" vector |> Draft_hpke_04.Kdf.of_int |> ok
+
+let draft_setup_sender suite ~rng ~recipient ~psk ~info =
+  match psk with
+  | None -> Draft_hpke_04.setup_base_sender ~rng suite ~recipient ~info
+  | Some psk -> Draft_hpke_04.setup_psk_sender ~rng suite ~recipient ~psk ~info
+
+let draft_setup_receiver suite ~recipient ~psk ~encapsulated_key ~info =
+  match psk with
+  | None ->
+      Draft_hpke_04.setup_base_receiver suite ~recipient ~encapsulated_key ~info
+  | Some psk ->
+      Draft_hpke_04.setup_psk_receiver suite ~recipient ~psk ~encapsulated_key
+        ~info
+
+let draft_contexts vector suite =
+  let kem = kem vector in
+  let recipient, recipient_public =
+    derive_key_pair_of vector kem ~role:"recipient" ~ikm_field:"ikmR"
+      ~sk_field:"skRm" ~pk_field:"pkRm"
+  in
+  let psk = psk vector and info = member_hex "info" vector in
+  let sender =
+    ok
+      (draft_setup_sender suite
+         ~rng:(fixed_rng (member_hex "ikmE" vector))
+         ~recipient:recipient_public ~psk ~info)
+  in
+  check_hex "encapsulated key"
+    (member_string "enc" vector)
+    sender.encapsulated_key;
+  let receiver =
+    ok
+      (draft_setup_receiver suite ~recipient ~psk
+         ~encapsulated_key:(member_hex "enc" vector) ~info)
+  in
+  (sender, receiver)
+
+let test_draft_vector vector =
+  let kem = kem vector and kdf = draft_kdf vector in
+  match member_int "aead_id" vector with
+  | 0xffff ->
+      let sender, receiver =
+        draft_contexts vector (Draft_hpke_04.Suite.export_only ~kem ~kdf)
+      in
+      check_exports vector sender.context receiver
+  | identifier ->
+      let aead = Aead.of_int identifier |> ok in
+      let sender, receiver =
+        draft_contexts vector (Draft_hpke_04.Suite.create ~kem ~kdf ~aead)
+      in
+      vector |> member "encryptions" |> to_list
+      |> List.iteri (fun index encryption ->
+          let aad = member_hex "aad" encryption in
+          let expected = member_string "ct" encryption in
+          check_hex
+            (Format.sprintf "sender ciphertext %d" index)
+            expected
+            (ok
+               (Rfc9180.Sender.seal sender.context ~aad
+                  ~plaintext:(member_hex "pt" encryption)));
+          check_hex
+            (Format.sprintf "receiver plaintext %d" index)
+            (member_string "pt" encryption)
+            (ok
+               (Rfc9180.Receiver.open_ receiver ~aad ~ciphertext:(hex expected))));
+      check_exports vector sender.context receiver
+
+(* The SHAKE vectors publish the shared secret and the outputs of the key
+   schedule. Framing CombineSecrets_OneStage (draft-ietf-hpke-hpke-04, Section
+   5.1) here, over the public unlabeled Derive, makes them known answers for
+   Draft_hpke_04.Kdf.derive and checks the framing independently. *)
+let test_one_stage_key_schedule vector =
+  let kdf = draft_kdf vector in
+  let aead = member_int "aead_id" vector |> Aead.of_int |> ok in
+  let suite_id =
+    "HPKE"
+    ^ i2osp2 (member_int "kem_id" vector)
+    ^ i2osp2 (Draft_hpke_04.Kdf.to_int kdf)
+    ^ i2osp2 (Aead.to_int aead)
+  in
+  let length_prefixed value = i2osp2 (String.length value) ^ value in
+  let labeled_derive ikm label context length =
+    ok
+      (Draft_hpke_04.Kdf.derive kdf
+         (ikm ^ "HPKE-v1" ^ suite_id ^ length_prefixed label ^ i2osp2 length
+        ^ context)
+         length)
+  in
+  Alcotest.(check int) "Base mode" 0 (member_int "mode" vector);
+  let nk = Aead.key_size aead and nn = Aead.nonce_size aead in
+  let nh = Draft_hpke_04.Kdf.hash_size kdf in
+  let secret =
+    labeled_derive
+      (length_prefixed "" ^ length_prefixed (member_hex "shared_secret" vector))
+      "secret"
+      ("\000" ^ length_prefixed "" ^ length_prefixed (member_hex "info" vector))
+      (nk + nn + nh)
+  in
+  check_hex "key" (member_string "key" vector) (String.sub secret 0 nk);
+  check_hex "base nonce"
+    (member_string "base_nonce" vector)
+    (String.sub secret nk nn);
+  check_hex "exporter secret"
+    (member_string "exporter_secret" vector)
+    (String.sub secret (nk + nn) nh)
 
 let vector_name vector =
   Format.sprintf "mode-%d-kem-%04x-kdf-%04x-aead-%04x"
@@ -533,13 +651,21 @@ let () =
   let vectors = vectors_of "HPKE_TEST_VECTORS" "vectors" in
   Alcotest.(check int) "supported vector count" 128 (List.length vectors);
   let pq_vectors = vectors_of "HPKE_PQ_TEST_VECTORS" "vectors" in
-  Alcotest.(check int) "supported PQ vector count" 3 (List.length pq_vectors);
+  Alcotest.(check int) "supported PQ vector count" 6 (List.length pq_vectors);
   let pq_kem_only_vectors =
     vectors_of "HPKE_PQ_TEST_VECTORS" "kem_only_vectors"
   in
   Alcotest.(check int)
     "KEM-only PQ vector count" 1
     (List.length pq_kem_only_vectors);
+  let pq_draft_vectors = vectors_of "HPKE_PQ_TEST_VECTORS" "draft_vectors" in
+  Alcotest.(check int) "SHAKE PQ vector count" 4 (List.length pq_draft_vectors);
+  (* The draft has no Auth or AuthPSK mode. *)
+  let base_and_psk =
+    List.filter (fun vector -> member_int "mode" vector < 2) vectors
+  in
+  Alcotest.(check int)
+    "RFC 9180 Base and PSK vectors" 64 (List.length base_and_psk);
   let named_tests_of name test vectors =
     List.map
       (fun vector ->
@@ -565,4 +691,13 @@ let () =
       ( "draft-ietf-hpke-pq KEM only",
         named_tests_of kem_only_vector_name test_pq_kem_only pq_kem_only_vectors
       );
+      ( "draft-ietf-hpke-hpke-04, SHAKE",
+        tests_of test_draft_vector pq_draft_vectors );
+      ( "draft-ietf-hpke-hpke-04, SHAKE key schedule",
+        tests_of test_one_stage_key_schedule pq_draft_vectors );
+      ( "draft-ietf-hpke-hpke-04, SHAKE single-shot AEAD",
+        tests_of test_single_shot_aead pq_draft_vectors );
+      ("draft-ietf-hpke-hpke-04, HKDF PQ", tests_of test_draft_vector pq_vectors);
+      ( "draft-ietf-hpke-hpke-04, RFC 9180 Base and PSK",
+        tests_of test_draft_vector base_and_psk );
     ]

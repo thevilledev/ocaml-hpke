@@ -13,8 +13,9 @@ module Error : sig
     | Invalid_encapsulation of string
     | Key_mismatch
     | Unsupported_mode
-        (** The suite's KEM does not provide the requested mode. ML-KEM has no
-            Auth or AuthPSK mode: see {!Kem.supports_auth}. *)
+        (** The suite's KEM does not provide the requested mode. ML-KEM and the
+            PQ/T hybrid KEMs have no Auth or AuthPSK mode: see
+            {!Kem.supports_auth}. *)
     | Derive_key_pair_failure
     | Invalid_psk of string
     | Invalid_length of string
@@ -38,7 +39,17 @@ module Kem : sig
       the encodings below are those of FIPS 203 and are not expected to move,
       but {!derive_key_pair} follows the draft and changes if the draft does.
       The draft prefers [Mlkem768] and [Mlkem1024] to [Mlkem512], as a hedge
-      against cryptanalysis that weakens ML-KEM without breaking it. *)
+      against cryptanalysis that weakens ML-KEM without breaking it.
+
+      [Mlkem768_p256] (MLKEM768-P256, [0x0050]), [Mlkem768_x25519]
+      (MLKEM768-X25519, [0x647a]), and [Mlkem1024_p384] (MLKEM1024-P384,
+      [0x0051]) are the post-quantum/traditional hybrid KEMs of the same draft,
+      as [draft-irtf-cfrg-concrete-hybrid-kems] defines them: ML-KEM combined
+      with an elliptic-curve group, secure as long as either half is.
+      [Mlkem768_x25519] is X-Wing. They work in the Base and PSK modes. A public
+      key is the ML-KEM key followed by the group element, an encapsulated key
+      the ML-KEM ciphertext followed by an ephemeral element, and a private key
+      the 32-byte seed that both halves are derived from. *)
   type id =
     | P256
     | P384
@@ -48,22 +59,28 @@ module Kem : sig
     | Mlkem512
     | Mlkem768
     | Mlkem1024
+    | Mlkem768_p256
+    | Mlkem768_x25519
+    | Mlkem1024_p384
 
   val to_int : id -> int
   val of_int : int -> (id, Error.t) result
   val pp : Format.formatter -> id -> unit
 
   val public_key_size : id -> int
-  (** [Npk]. An ML-KEM public key is a FIPS 203 encapsulation key. *)
+  (** [Npk]. An ML-KEM public key is a FIPS 203 encapsulation key. A hybrid one
+      appends an uncompressed SEC1 point, or an X25519 public value, to it. *)
 
   val private_key_size : id -> int
   (** [Nsk]. An ML-KEM private key is the 64-byte seed [d || z] of FIPS 203, and
-      not the expanded decapsulation key. *)
+      not the expanded decapsulation key. A hybrid private key is a 32-byte
+      seed. *)
 
   val encapsulated_key_size : id -> int
   (** [Nenc]. A Diffie-Hellman KEM encapsulates to a public key, so this is
       {!public_key_size}; ML-KEM encapsulates to a ciphertext, whose size
-      differs from that of a key. *)
+      differs from that of a key, and a hybrid KEM to that ciphertext and an
+      ephemeral group element. *)
 
   val secret_size : id -> int
   (** [Nsecret], the length in bytes of the KEM shared secret. *)
@@ -71,9 +88,9 @@ module Kem : sig
   val supports_auth : id -> bool
   (** Whether the KEM provides the Auth and AuthPSK modes: the "Auth" column of
       the IANA HPKE KEM registry. It is [true] for the Diffie-Hellman KEMs and
-      [false] for ML-KEM, which has no authenticated encapsulation. With such a
-      KEM the [auth] functions of {!Rfc9180} return {!Error.Unsupported_mode}.
-  *)
+      [false] for ML-KEM and the hybrid KEMs, which have no authenticated
+      encapsulation. With such a KEM the [auth] functions of {!Rfc9180} return
+      {!Error.Unsupported_mode}. *)
 end
 
 module Kdf : sig
@@ -165,7 +182,10 @@ module Public_key : sig
       SEC1 form. X25519 and X448 low-order rejection occurs when the key is
       used. An ML-KEM encapsulation key must pass the modulus check of FIPS 203,
       Section 7.2: every coefficient reduced. Parsing one expands its public
-      matrix, so parse a key once for everything sealed to it. *)
+      matrix, so parse a key once for everything sealed to it. A hybrid key must
+      pass that check for its ML-KEM half, and its element is validated as a key
+      of its group: an uncompressed point on P-256 or P-384, or for X25519 when
+      it is used. *)
 
   val to_bytes : t -> string
   val kem : t -> Kem.id
@@ -179,11 +199,15 @@ module Private_key : sig
   val of_bytes : kem:Kem.id -> string -> (t, Error.t) result
   (** Parse and validate an exact-length key. X25519 and X448 input is clamped.
       Every 64-byte string is an ML-KEM seed; parsing one runs the whole of
-      ML-KEM key generation, so parse a key once and keep it. *)
+      ML-KEM key generation, so parse a key once and keep it. A hybrid seed is
+      expanded with SHAKE256 into an ML-KEM seed and a scalar, and so costs as
+      much. P-256 and P-384 draw the scalar by rejection sampling, which fails
+      with negligible probability and is then reported as
+      {!Error.Invalid_private_key}. *)
 
   val to_bytes : t -> string
   (** Serialize the key. X25519 and X448 output is clamped as required by RFC
-      9180. An ML-KEM key is serialized as its seed. *)
+      9180. An ML-KEM or hybrid key is serialized as its seed. *)
 
   val kem : t -> Kem.id
   val public_key : t -> Public_key.t
@@ -195,14 +219,14 @@ val generate_key_pair :
   (Private_key.t * Public_key.t, Error.t) result
 (** Generate a key pair using the explicitly supplied random generator. An
     ML-KEM key pair is that of [ML-KEM.KeyGen] (FIPS 203) with 64 bytes of the
-    generator's output as its seed. *)
+    generator's output as its seed, and a hybrid one that of 32 bytes. *)
 
 val derive_key_pair :
   Kem.id -> ikm:string -> (Private_key.t * Public_key.t, Error.t) result
 (** Deterministically derive a key pair: as specified by RFC 9180 for its
-    Diffie-Hellman KEMs, and for ML-KEM by [draft-ietf-hpke-pq-05], which
-    derives the seed from [ikm] with SHAKE256. [ikm] should hold at least
-    {!Kem.private_key_size} bytes of entropy. *)
+    Diffie-Hellman KEMs, and for ML-KEM and the hybrid KEMs by
+    [draft-ietf-hpke-pq-05], which derives the seed from [ikm] with SHAKE256.
+    [ikm] should hold at least {!Kem.private_key_size} bytes of entropy. *)
 
 module Psk : sig
   type t
@@ -242,7 +266,14 @@ module Rfc9180 : sig
       another key, ML-KEM yields a secret unrelated to the sender's (implicit
       rejection, FIPS 203), so a receiver is set up without an error and the
       failure surfaces as {!Error.Open_error} on its first {!Receiver.open_}, or
-      as exports that differ from the sender's. *)
+      as exports that differ from the sender's.
+
+      A hybrid suite behaves as an ML-KEM one, except that the ephemeral element
+      in its encapsulated key is validated: one that is not a point on the
+      curve, or an X25519 value of low order, is reported as
+      {!Error.Invalid_encapsulation}. [draft-irtf-cfrg-concrete-hybrid-kems]
+      does not check the X25519 value, and an honest sender never produces one
+      that fails, so this refuses only input that could not come from one. *)
 
   module Sender : sig
     type 'capability t
@@ -305,7 +336,8 @@ module Rfc9180 : sig
     ('capability Receiver.t, Error.t) result
   (** Establish a Base-mode receiver context. Invalid encapsulations are
       reported structurally at this context-level API. For ML-KEM that is a
-      wrong length only: see {!Rfc9180}. *)
+      wrong length only, and for a hybrid KEM a wrong length or an invalid
+      element: see {!Rfc9180}. *)
 
   val setup_psk_sender :
     rng:Mirage_crypto_rng.g ->
@@ -339,8 +371,8 @@ module Rfc9180 : sig
       9180, Section 9.1.1), so the recipient cannot prove to anyone else who
       sealed a message. Where either matters, also sign the encapsulated key and
       the ciphertexts. Returns {!Error.Unsupported_mode} if the suite's KEM has
-      no Auth mode, as ML-KEM does not, and otherwise {!Error.Key_mismatch}
-      unless the suite and both keys share one KEM. *)
+      no Auth mode, as ML-KEM and the hybrid KEMs do not, and otherwise
+      {!Error.Key_mismatch} unless the suite and both keys share one KEM. *)
 
   val setup_auth_receiver :
     'capability Suite.t ->
@@ -469,6 +501,164 @@ module Rfc9180 : sig
   *)
 end
 
+module Draft_hpke_04 : sig
+  (** The successor of RFC 9180 as [draft-ietf-hpke-hpke-04] specifies it, with
+      the one-stage SHA-3 KDFs of [draft-ietf-hpke-pq-05], Section 5.
+
+      This is a separate, versioned module, so that {!Rfc9180} keeps its wire
+      behavior: nothing here changes what an {!Rfc9180} function does. The draft
+      is not yet an RFC, and this module follows revision 04 of it; a later
+      revision that changes the wire gets a module of its own.
+
+      The draft is RFC 9180 without the Auth and AuthPSK modes, and with a
+      second kind of KDF. With an HKDF a suite runs the RFC 9180 Base and PSK
+      modes unchanged, so its keys, encapsulations, ciphertexts and exports are
+      those of {!Rfc9180}. With a one-stage KDF, SHAKE128 or SHAKE256, the key
+      schedule derives the key, base nonce and exporter secret in one call of
+      [LabeledDerive], and so does {!Sender.export}. Every KEM works with every
+      KDF, those of the draft included. TurboSHAKE128 and TurboSHAKE256
+      ([0x0012] and [0x0013]) are not provided yet.
+
+      Keys, KEMs, AEADs, PSKs, errors and contexts are those of the rest of the
+      library. {!Private_key.to_bytes} clamps X25519 and X448 keys, where the
+      draft serializes them unclamped; both describe the same key pair.
+
+      With a one-stage KDF, [info], a PSK and its identifier may each hold at
+      most 65535 bytes (Section 7.2.1), and a longer one is
+      {!Error.Invalid_length}. An export may be up to 65535 bytes long. *)
+
+  module Kdf : sig
+    (** The KDF registry of [draft-ietf-hpke-hpke-04] and
+        [draft-ietf-hpke-pq-05]: the HKDFs of RFC 9180, which are two-stage, and
+        the one-stage SHAKE128 ([0x0010]) and SHAKE256 ([0x0011]). *)
+    type id = Hkdf_sha256 | Hkdf_sha384 | Hkdf_sha512 | Shake128 | Shake256
+
+    val to_int : id -> int
+    val of_int : int -> (id, Error.t) result
+    val pp : Format.formatter -> id -> unit
+
+    val hash_size : id -> int
+    (** [Nh]: the output length of [Extract] for an HKDF, and the security
+        strength in bytes for a one-stage KDF, 32 for SHAKE128 and 64 for
+        SHAKE256. *)
+
+    val two_stage : id -> Kdf.id option
+    (** The RFC 9180 KDF of a two-stage KDF, whose {!Hpke.Kdf.extract} and
+        {!Hpke.Kdf.expand} are its [Extract] and [Expand]; [None] for a
+        one-stage KDF. *)
+
+    val derive : id -> string -> int -> (string, Error.t) result
+    (** [derive id ikm length] is the unlabeled [Derive(ikm, L)] of a one-stage
+        KDF, for protocols layered on HPKE: SHAKE128 or SHAKE256 of [ikm], cut
+        to [length] bytes. Returns {!Error.Unsupported_algorithm} for a
+        two-stage KDF, and {!Error.Invalid_length} for a negative [length]. *)
+  end
+
+  module Suite : sig
+    type encryption = Suite.encryption
+    type export_only = Suite.export_only
+
+    type _ t
+    (** A ciphersuite of this module. Its capabilities are those of
+        {!Hpke.Suite}, so that its contexts are those of {!Rfc9180}. *)
+
+    val create : kem:Kem.id -> kdf:Kdf.id -> aead:Aead.id -> encryption t
+    val export_only : kem:Kem.id -> kdf:Kdf.id -> export_only t
+    val kem : _ t -> Kem.id
+    val kdf : _ t -> Kdf.id
+    val aead : encryption t -> Aead.id
+  end
+
+  module Sender = Rfc9180.Sender
+  module Receiver = Rfc9180.Receiver
+
+  type 'capability sender_setup = 'capability Rfc9180.sender_setup = {
+    encapsulated_key : string;
+    context : 'capability Sender.t;
+  }
+
+  type ciphertext = Rfc9180.ciphertext = {
+    encapsulated_key : string;
+    ciphertext : string;
+  }
+
+  val setup_base_sender :
+    rng:Mirage_crypto_rng.g ->
+    'capability Suite.t ->
+    recipient:Public_key.t ->
+    info:string ->
+    ('capability sender_setup, Error.t) result
+  (** As {!Rfc9180.setup_base_sender}. Returns {!Error.Key_mismatch} unless the
+      suite and the key share one KEM. *)
+
+  val setup_base_receiver :
+    'capability Suite.t ->
+    recipient:Private_key.t ->
+    encapsulated_key:string ->
+    info:string ->
+    ('capability Receiver.t, Error.t) result
+  (** As {!Rfc9180.setup_base_receiver}. *)
+
+  val setup_psk_sender :
+    rng:Mirage_crypto_rng.g ->
+    'capability Suite.t ->
+    recipient:Public_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    ('capability sender_setup, Error.t) result
+  (** As {!Rfc9180.setup_psk_sender}. *)
+
+  val setup_psk_receiver :
+    'capability Suite.t ->
+    recipient:Private_key.t ->
+    psk:Psk.t ->
+    encapsulated_key:string ->
+    info:string ->
+    ('capability Receiver.t, Error.t) result
+  (** As {!Rfc9180.setup_psk_receiver}. *)
+
+  val seal_base :
+    rng:Mirage_crypto_rng.g ->
+    Suite.encryption Suite.t ->
+    recipient:Public_key.t ->
+    info:string ->
+    aad:string ->
+    plaintext:string ->
+    (ciphertext, Error.t) result
+  (** As {!Rfc9180.seal_base}. *)
+
+  val open_base :
+    Suite.encryption Suite.t ->
+    recipient:Private_key.t ->
+    info:string ->
+    aad:string ->
+    ciphertext:ciphertext ->
+    (string, Error.t) result
+  (** As {!Rfc9180.open_base}: every failure other than {!Error.Key_mismatch} is
+      {!Error.Open_error}. *)
+
+  val seal_psk :
+    rng:Mirage_crypto_rng.g ->
+    Suite.encryption Suite.t ->
+    recipient:Public_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    aad:string ->
+    plaintext:string ->
+    (ciphertext, Error.t) result
+  (** As {!Rfc9180.seal_psk}. *)
+
+  val open_psk :
+    Suite.encryption Suite.t ->
+    recipient:Private_key.t ->
+    psk:Psk.t ->
+    info:string ->
+    aad:string ->
+    ciphertext:ciphertext ->
+    (string, Error.t) result
+  (** As {!Rfc9180.open_psk}. *)
+end
+
 (**/**)
 
 module Private : sig
@@ -476,9 +666,10 @@ module Private : sig
      These functions let the caller choose the sender's ephemeral key, which
      breaks HPKE's security if that key is ever reused or disclosed. They back
      the [hpke.for_testing] library, which is the only supported way to reach
-     them. ML-KEM encapsulates without an ephemeral key, so with an ML-KEM suite
-     the Base and PSK ones return [Invalid_private_key]. The Auth and AuthPSK
-     ones return [Unsupported_mode] there, as ML-KEM has neither mode. *)
+     them. ML-KEM and the hybrid KEMs encapsulate without an ephemeral key, so
+     with such a suite the Base and PSK ones return [Invalid_private_key]. The
+     Auth and AuthPSK ones return [Unsupported_mode] there, as those KEMs have
+     neither mode. *)
 
   val setup_base_sender_with_ephemeral :
     'capability Suite.t ->

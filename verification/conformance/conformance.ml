@@ -27,6 +27,9 @@ let kem_name = function
   | Mlkem512 -> "mlkem512"
   | Mlkem768 -> "mlkem768"
   | Mlkem1024 -> "mlkem1024"
+  | Mlkem768_p256 -> "mlkem768p256"
+  | Mlkem768_x25519 -> "mlkem768x25519"
+  | Mlkem1024_p384 -> "mlkem1024p384"
 
 let kdf_name = function
   | H.Kdf.Hkdf_sha256 -> "sha256"
@@ -39,7 +42,20 @@ let aead_name = function
   | Chacha20_poly1305 -> "chacha20poly1305"
 
 let all_kems =
-  H.Kem.[ P256; P384; P521; X25519; X448; Mlkem512; Mlkem768; Mlkem1024 ]
+  H.Kem.
+    [
+      P256;
+      P384;
+      P521;
+      X25519;
+      X448;
+      Mlkem512;
+      Mlkem768;
+      Mlkem1024;
+      Mlkem768_p256;
+      Mlkem768_x25519;
+      Mlkem1024_p384;
+    ]
 
 let all_kdfs = H.Kdf.[ Hkdf_sha256; Hkdf_sha384; Hkdf_sha512 ]
 let all_aeads = H.Aead.[ Aes_128_gcm; Aes_256_gcm; Chacha20_poly1305 ]
@@ -92,7 +108,7 @@ let state ~base_nonce ~sequence =
     key;
     base_nonce;
     exporter_secret = "";
-    kdf = H.Kdf.Hkdf_sha256;
+    kdf = H.Two_stage H.Kdf.Hkdf_sha256;
     suite_id = "";
     sequence;
     busy = Atomic.make false;
@@ -300,6 +316,40 @@ let check line =
           (result
              (fun key -> to_hex (H.Private_key.to_bytes key))
              (H.Private_key.of_bytes ~kem:(kem k) (of_hex bytes)))
+  (* The candidate the mirror picks, compared through the element the library
+     derives from it. *)
+  | [ "random_scalar"; g; seed; output ] ->
+      let random_scalar, public_of =
+        match kem g with
+        | H.Kem.P256 ->
+            ( (fun seed -> Option.map snd (H.P256_group.random_scalar seed)),
+              fun c ->
+                Result.map snd
+                  (Mirage_crypto_ec.P256.Dh.secret_of_octets ~compress:false c)
+            )
+        | H.Kem.P384 ->
+            ( (fun seed -> Option.map snd (H.P384_group.random_scalar seed)),
+              fun c ->
+                Result.map snd
+                  (Mirage_crypto_ec.P384.Dh.secret_of_octets ~compress:false c)
+            )
+        | _ -> invalid_arg "random_scalar: not a NIST group"
+      in
+      let expected =
+        match output with
+        | "none" | "raises" -> output
+        | candidate -> (
+            match public_of (of_hex candidate) with
+            | Ok element -> to_hex element
+            | Error _ -> "invalid candidate")
+      in
+      expect line ~expected
+        ~actual:
+          (try
+             match random_scalar (of_hex seed) with
+             | None -> "none"
+             | Some element -> to_hex element
+           with Invalid_argument _ -> "raises")
   | [ "normalize_x25519"; bytes; output ] ->
       expect line ~expected:output
         ~actual:(raises (fun () -> H.Util.normalize_x25519 (of_hex bytes)))

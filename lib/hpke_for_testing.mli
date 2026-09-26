@@ -8,13 +8,14 @@
     sealed under it, so this library must not be used by production protocols.
     Use {!Hpke.Rfc9180} instead.
 
-    ML-KEM encapsulates from randomness and has no ephemeral key, so with an
-    ML-KEM suite {!setup_base_sender} and {!setup_psk_sender} return
-    {!Hpke.Error.Invalid_private_key}. {!setup_auth_sender} and
-    {!setup_auth_psk_sender} return {!Hpke.Error.Unsupported_mode} there, as the
-    ordinary Auth and AuthPSK setup functions do: ML-KEM has neither mode. To
-    reproduce a vector that fixes that randomness, pass a generator that returns
-    it as [~rng] to the ordinary {!Hpke.Rfc9180} setup function. *)
+    ML-KEM and the PQ/T hybrid KEMs encapsulate from randomness and have no
+    ephemeral key of their own KEM, so with such a suite {!setup_base_sender}
+    and {!setup_psk_sender} return {!Hpke.Error.Invalid_private_key}.
+    {!setup_auth_sender} and {!setup_auth_psk_sender} return
+    {!Hpke.Error.Unsupported_mode} there, as the ordinary Auth and AuthPSK setup
+    functions do: those KEMs have neither mode. To reproduce a vector that fixes
+    that randomness, pass a generator that returns it as [~rng] to the ordinary
+    {!Hpke.Rfc9180} setup function. *)
 
 val setup_base_sender :
   'capability Hpke.Suite.t ->

@@ -19,13 +19,18 @@ let all_kems =
     Kem.Mlkem512;
     Kem.Mlkem768;
     Kem.Mlkem1024;
+    Kem.Mlkem768_p256;
+    Kem.Mlkem768_x25519;
+    Kem.Mlkem1024_p384;
   ]
 
 let all_aeads = [ Aead.Aes_128_gcm; Aead.Aes_256_gcm; Aead.Chacha20_poly1305 ]
 
 let kdf_for_kem = function
-  | Kem.P256 | Kem.X25519 | Kem.Mlkem512 | Kem.Mlkem768 -> Kdf.Hkdf_sha256
-  | Kem.P384 | Kem.Mlkem1024 -> Kdf.Hkdf_sha384
+  | Kem.P256 | Kem.X25519 | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem768_p256
+  | Kem.Mlkem768_x25519 ->
+      Kdf.Hkdf_sha256
+  | Kem.P384 | Kem.Mlkem1024 | Kem.Mlkem1024_p384 -> Kdf.Hkdf_sha384
   | Kem.P521 | Kem.X448 -> Kdf.Hkdf_sha512
 
 let kem_name = function
@@ -37,6 +42,18 @@ let kem_name = function
   | Kem.Mlkem512 -> "ML-KEM-512"
   | Kem.Mlkem768 -> "ML-KEM-768"
   | Kem.Mlkem1024 -> "ML-KEM-1024"
+  | Kem.Mlkem768_p256 -> "MLKEM768-P256"
+  | Kem.Mlkem768_x25519 -> "MLKEM768-X25519"
+  | Kem.Mlkem1024_p384 -> "MLKEM1024-P384"
+
+(* Whether an encapsulation of the right length can be malformed: a
+   Diffie-Hellman one or the element of a hybrid one can, and an ML-KEM
+   ciphertext cannot. *)
+let validates_encapsulation = function
+  | Kem.Mlkem512 | Kem.Mlkem768 | Kem.Mlkem1024 -> false
+  | Kem.P256 | Kem.P384 | Kem.P521 | Kem.X25519 | Kem.X448 | Kem.Mlkem768_p256
+  | Kem.Mlkem768_x25519 | Kem.Mlkem1024_p384 ->
+      true
 
 let aead_name = function
   | Aead.Aes_128_gcm -> "AES-128-GCM"
@@ -90,7 +107,7 @@ let mode_cases =
          ])
        suite_cases)
 
-(* ML-KEM has no Auth or AuthPSK mode. *)
+(* ML-KEM and the hybrids have no Auth or AuthPSK mode. *)
 let supports suite_case = function
   | Base | Psk -> true
   | Auth | Auth_psk -> Kem.supports_auth (Suite.kem suite_case.suite)
@@ -112,10 +129,10 @@ let setup_receiver suite_case mode ~encapsulated_key ~info ~psk =
         ~encapsulated_key ~info
 
 (* Pads or truncates to [size], so that X25519 and X448 inputs reach the
-   key-exchange validation instead of failing the length check, and ML-KEM
-   ciphertexts reach decapsulation. Padded NIST encodings rarely parse either
-   way; a padded ML-KEM encapsulation key parses when the coefficients of its
-   prefix happen to be reduced. *)
+   key-exchange validation instead of failing the length check, and ML-KEM and
+   hybrid ciphertexts reach decapsulation. Padded NIST encodings rarely parse
+   either way; a padded ML-KEM encapsulation key parses when the coefficients of
+   its prefix happen to be reduced. *)
 let fit size bytes =
   if String.length bytes >= size then String.sub bytes 0 size
   else bytes ^ String.make (size - String.length bytes) '\000'
@@ -195,7 +212,7 @@ let () =
      one, so the test above seldom gets past the length check. Fitted to size
      they reach the key exchange or the decapsulation. ML-KEM must then
      decapsulate them, to a secret that nothing was sealed under (implicit
-     rejection). *)
+     rejection), and a hybrid KEM too unless its element is invalid. *)
   Crowbar.add_test ~name:"fitted encapsulations"
     [ Crowbar.range (List.length suite_cases); Crowbar.bytes; Crowbar.bytes ]
     (fun selector encoding ciphertext ->
@@ -207,7 +224,9 @@ let () =
           ~encapsulated_key:(fit (Kem.encapsulated_key_size kem) encoding)
           ~info:""
       with
-      | Error (Error.Invalid_encapsulation _) when Kem.supports_auth kem -> ()
+      | Error (Error.Invalid_encapsulation _) when validates_encapsulation kem
+        ->
+          ()
       | Error error ->
           Crowbar.failf "%s fitted encapsulation: %a" suite_case.name Error.pp
             error
@@ -219,6 +238,62 @@ let () =
           | Ok _ ->
               Crowbar.failf "%s opened under a fuzzed encapsulation"
                 suite_case.name));
+  (* Hpke.Draft_hpke_04 with a one-stage KDF: arbitrary encapsulations, info,
+     PSK identifiers and ciphertexts reach the one-stage key schedule. Only a
+     malformed encapsulation or an overlong input is refused before the open,
+     and nothing opens. *)
+  let draft_cases =
+    let generator = rng () in
+    List.concat_map
+      (fun kem ->
+        let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+        List.map
+          (fun kdf ->
+            let suite =
+              Draft_hpke_04.Suite.create ~kem ~kdf ~aead:Aead.Aes_128_gcm
+            in
+            let setup =
+              ok
+                (Draft_hpke_04.setup_base_sender ~rng:generator suite
+                   ~recipient:public ~info:"")
+            in
+            (kem, suite, recipient, setup.encapsulated_key))
+          Draft_hpke_04.Kdf.[ Shake128; Shake256 ])
+      all_kems
+  in
+  Crowbar.add_test ~name:"draft one-stage receivers"
+    [
+      Crowbar.range (List.length draft_cases);
+      Crowbar.bool;
+      Crowbar.bytes;
+      Crowbar.bytes;
+      Crowbar.bytes;
+    ]
+    (fun selector psk_mode encoding info ciphertext ->
+      let kem, suite, recipient, encapsulated_key =
+        List.nth draft_cases selector
+      in
+      let encapsulated_key =
+        if String.length encoding = 0 then encapsulated_key
+        else fit (Kem.encapsulated_key_size kem) encoding
+      in
+      let setup =
+        if psk_mode then
+          Draft_hpke_04.setup_psk_receiver suite ~recipient
+            ~psk:(fuzz_psk info info) ~encapsulated_key ~info
+        else
+          Draft_hpke_04.setup_base_receiver suite ~recipient ~encapsulated_key
+            ~info
+      in
+      match setup with
+      | Error (Error.Invalid_encapsulation _) -> ()
+      | Error error -> Crowbar.failf "draft receiver: %a" Error.pp error
+      | Ok receiver -> (
+          ignore (Rfc9180.Receiver.export receiver ~context:info ~length:32);
+          match Rfc9180.Receiver.open_ receiver ~aad:"" ~ciphertext with
+          | Error Error.Open_error -> ()
+          | Error error -> Crowbar.failf "draft open: %a" Error.pp error
+          | Ok _ -> Crowbar.fail "a fuzzed ciphertext opened"));
   Crowbar.add_test ~name:"sender keys"
     [ Crowbar.range (List.length suite_cases); Crowbar.bytes; Crowbar.bytes ]
     (fun selector encoding ciphertext ->
@@ -234,7 +309,7 @@ let () =
             (Rfc9180.open_auth suite ~recipient ~sender ~info:"" ~aad:""
                ~ciphertext:{ Rfc9180.encapsulated_key; ciphertext });
           (* The encapsulation is valid, so a failure can only be the sender
-             key's, or for ML-KEM the mode's. *)
+             key's, or for ML-KEM and the hybrids the mode's. *)
           match
             Rfc9180.setup_auth_receiver suite ~recipient ~sender
               ~encapsulated_key ~info:""

@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+Adds the post-quantum/traditional hybrid KEMs, and the successor draft of HPKE
+with the SHAKE KDFs in a module of its own. `Kem.id` gains constructors, which
+exhaustive matches must handle.
+
+- Add `Kem.Mlkem768_p256` (MLKEM768-P256, `0x0050`), `Kem.Mlkem768_x25519`
+  (MLKEM768-X25519, or X-Wing, `0x647a`), and `Kem.Mlkem1024_p384`
+  (MLKEM1024-P384, `0x0051`), the hybrid KEMs of `draft-ietf-hpke-pq-05` as
+  `draft-irtf-cfrg-concrete-hybrid-kems` defines them: ML-KEM and an
+  elliptic-curve group, combined with SHA3-256 so that the shared secret holds
+  as long as either half does. They work in the Base and PSK modes, where a
+  suite with an HKDF runs the RFC 9180 key schedule unchanged, and like ML-KEM
+  have no Auth or AuthPSK mode. A private key is a 32-byte seed, expanded with
+  SHAKE256 into an ML-KEM seed and a scalar, and `derive_key_pair` derives it
+  with SHAKE256 as for ML-KEM. A public key is the ML-KEM key followed by the
+  group element, and both halves are validated when it is parsed, the X25519
+  one when it is used. An encapsulated key is the ML-KEM ciphertext followed by
+  an ephemeral element. A tampered ciphertext decapsulates to an unrelated
+  secret, as for ML-KEM, but an element that is off the curve, or an X25519
+  value of low order, is `Invalid_encapsulation`.
+- The hybrid combiner is Digestif's SHA3-256 and the key expansion the
+  SHAKE256 of `mlkem`, both existing dependencies, so the library still
+  implements no primitive of its own and gains no dependency.
+- Grow the pinned `draft-ietf-hpke-pq-05` corpus from three vectors to six:
+  one for each hybrid, in full. The two hybrid vectors whose KDF this library
+  lacks join the ML-KEM-1024 one as KEM-only vectors, for key derivation and
+  encapsulation.
+- `hpke.for_testing` refuses a hybrid suite as it does an ML-KEM one.
+- Add `Hpke.Draft_hpke_04`, HPKE as `draft-ietf-hpke-hpke-04` specifies it,
+  in a separate versioned module so that `Hpke.Rfc9180` keeps its wire
+  behavior. It offers the Base and PSK modes over every KEM, with a KDF
+  registry of its own: the RFC 9180 HKDFs, with which a suite is the RFC 9180
+  suite of the same identifiers, and the one-stage SHAKE128 (`0x0010`) and
+  SHAKE256 (`0x0011`) of `draft-ietf-hpke-pq-05`, with which the key schedule
+  and exports run `LabeledDerive`. Keys, AEADs, PSKs and contexts are shared.
+  `Draft_hpke_04.Kdf.derive` exposes the unlabeled `Derive` for layered
+  protocols. TurboSHAKE128 and TurboSHAKE256 wait for `mlkem` to provide
+  TurboSHAKE.
+- The pinned `draft-ietf-hpke-pq-05` corpus gains the four SHAKE vectors in
+  full, run through `Draft_hpke_04`, which also reproduces the six HKDF
+  vectors and the 64 RFC 9180 Base and PSK vectors.
+- Extend the Lean mirrors to the hybrids. `Hybrid_kem` is proved to be the CG
+  framework's `DeriveKeyPair`, `Encaps` and `Decaps` of
+  `draft-irtf-cfrg-hybrid-kems`, decapsulation to recover what was
+  encapsulated, and the P-256 and P-384 scalar sampling to be the concrete
+  draft's `RandomScalar`. The conformance vectors grow from 4442 checks to
+  8843, all 2904 setup combinations of the eleven KEMs among them.
+
 ## 0.3.0 — 2026-09-25
 
 Adds X448, the RFC 9180 Auth and AuthPSK modes, and the post-quantum ML-KEM

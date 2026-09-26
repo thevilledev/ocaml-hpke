@@ -44,7 +44,8 @@ def randBytes (seed n : Nat) : Bytes :=
 def kemName : KemId → String
   | .p256 => "p256" | .p384 => "p384" | .p521 => "p521" | .x25519 => "x25519"
   | .x448 => "x448" | .mlkem512 => "mlkem512" | .mlkem768 => "mlkem768"
-  | .mlkem1024 => "mlkem1024"
+  | .mlkem1024 => "mlkem1024" | .mlkem768P256 => "mlkem768p256"
+  | .mlkem768X25519 => "mlkem768x25519" | .mlkem1024P384 => "mlkem1024p384"
 
 def kdfName : KdfId → String
   | .hkdfSha256 => "sha256" | .hkdfSha384 => "sha384" | .hkdfSha512 => "sha512"
@@ -79,7 +80,7 @@ def result {α} (render : α → String) : Except Err α → String
 
 def registry : List String := Id.run do
   let mut out := []
-  for n in (List.range 0x50).map Int.ofNat ++ [-1, 0xffff, 0x10000] do
+  for n in (List.range 0x53).map Int.ofNat ++ [0x6479, 0x647a, 0x647b, -1, 0xffff, 0x10000] do
     out := out ++ [s!"kem_of_int {n} {result kemName (KemId.ofInt n)}",
       s!"kdf_of_int {n} {result kdfName (KdfId.ofInt n)}",
       s!"aead_of_int {n} {result aeadName (AeadId.ofInt n)}"]
@@ -167,6 +168,15 @@ def encodings : List String := Id.run do
       let ctx := randBytes (9950 + i) (i % 2 * 7)
       for len in [0, 32, 64] do
         out := out ++ [s!"labeled_derive {kemName k} {hex (ascii label)} {hex ctx} {hex ikm} {len} {optHex (kemDeriveShake256Input k (ascii label) ctx ikm len)}"]
+  -- The hybrids, with inputs of their own so that the lines above stay put.
+  let mut j := 0
+  for label in labels do
+    for k in [KemId.mlkem768P256, .mlkem768X25519, .mlkem1024P384] do
+      j := j + 1
+      let ikm := randBytes (16000 + j) (j % 3 * 16)
+      let ctx := randBytes (16500 + j) (j % 2 * 5)
+      for len in [0, 32, 64] do
+        out := out ++ [s!"labeled_derive {kemName k} {hex (ascii label)} {hex ctx} {hex ikm} {len} {optHex (kemDeriveShake256Input k (ascii label) ctx ikm len)}"]
   return out
 
 /-! ## Private keys -/
@@ -209,6 +219,37 @@ def privateKeys : List String := Id.run do
     out := out ++ [s!"all_zero {hex ((List.replicate 5 (0 : UInt8)).set i 1)} {bool (Scalar.allZero ((List.replicate 5 (0 : UInt8)).set i 1))}"]
   return out
 
+/-! ## `RandomScalar` of the hybrids' NIST groups -/
+
+def raisesOptHex : Scalar.OCaml.Raises (Option Bytes) → String
+  | .ok (some b) => hex b
+  | .ok none => "none"
+  | .error _ => "raises"
+
+/-- Seeds for `Nist_group.random_scalar`: every combination of a valid, a zero,
+an out-of-range and a boundary candidate over the seed's candidates, random
+seeds, and seeds too short for a candidate or with a partial last one. -/
+def randomScalars : List String := Id.run do
+  let mut out := []
+  for g in [KemId.p256, .p384] do
+    let n := g.privateKeySize
+    let order := Scalar.groupOrder g
+    let slots := Scalar.groupSeedSize g / n
+    let kinds : List Bytes :=
+      [i2osp 0 n, i2osp order n, List.replicate n 0xff, i2osp (order - 1) n, i2osp 1 n,
+        randBytes (14000 + n) n]
+    -- Every choice of kind for each slot, over the first four kinds and the
+    -- last two in turn.
+    let mut seeds : List Bytes := [[]]
+    for _ in List.range slots do
+      seeds := seeds.flatMap fun s => [0, 1, 2, 3, 4].map fun k => s ++ kinds[k]!
+    seeds := seeds ++ (List.range 8).map (fun i => randBytes (15000 + i) (Scalar.groupSeedSize g))
+    seeds := seeds ++ [[], i2osp 1 (n - 1), i2osp 0 n ++ i2osp 1 (n - 1),
+      i2osp 0 n ++ kinds[5]! ++ [7]]
+    for seed in seeds do
+      out := out ++ [s!"random_scalar {kemName g} {hex seed} {raisesOptHex (Scalar.randomScalar g seed)}"]
+  return out
+
 /-! ## Setup error contracts -/
 
 /-- Every row of `Setup.table`: suite KEM, recipient KEM, sender KEM, mode,
@@ -217,7 +258,8 @@ def setups : List String :=
   Setup.table.map fun (s, r, sk, md, c) =>
     s!"setup {kemName s} {kemName r} {(sk.map kemName).getD "-"} {md} {Setup.className c}"
 
-def all : List String := registry ++ sequence ++ limits ++ encodings ++ privateKeys ++ setups
+def all : List String :=
+  registry ++ sequence ++ limits ++ encodings ++ privateKeys ++ randomScalars ++ setups
 
 end Conformance
 

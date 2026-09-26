@@ -1,7 +1,8 @@
 # Formal verification
 
 This directory holds machine-checked models of `lib/hpke.ml`. They are
-checked against RFC 9180, draft-ietf-hpke-pq-05, draft-ietf-hpke-hpke-04,
+checked against RFC 9180, draft-ietf-hpke-pq-05, draft-irtf-cfrg-hybrid-kems,
+draft-irtf-cfrg-concrete-hybrid-kems, draft-ietf-hpke-hpke-04,
 RFC 5869, RFC 7748, RFC 8439 and NIST SP 800-38D.
 
 | Directory | Tool | What it does |
@@ -18,7 +19,7 @@ OCaml computes. `conformance/` checks this on every `dune runtest`:
   pseudo-random inputs and writes `conformance/vectors.txt`.
 * `conformance/conformance.ml` compiles a copy of `lib/hpke.ml` without its
   interface, calls the real internal functions, and compares every line.
-* It covers 4442 checks. Among them are all 1152 combinations of suite KEM,
+* It covers 8843 checks. Among them are all 2904 combinations of suite KEM,
   recipient KEM, sender KEM and mode, each run through the real sender and
   receiver setup functions with real keys.
 
@@ -32,14 +33,14 @@ listed under [Trusted base](#trusted-base).
 | Lean module | `lib/hpke.ml` | Main results |
 | --- | --- | --- |
 | `Bytes` | (foundation) | `I2OSP`/`OS2IP` are inverse and injective; XOR with a fixed pad is injective. |
-| `Registry` | `Error`, `Kem`, `Kdf`, `Aead` | Every size and identifier equals RFC 9180 Tables 2, 3 and 5 and the draft-pq table. `of_int` and `to_int` are inverse, and every unknown identifier is `Unsupported_algorithm`. |
+| `Registry` | `Error`, `Kem`, `Kdf`, `Aead` | Every size and identifier equals RFC 9180 Tables 2, 3 and 5 and the draft-pq ML-KEM and hybrid tables. A hybrid's sizes are its ML-KEM part's plus its group's. `of_int` and `to_int` are inverse, and every unknown identifier is `Unsupported_algorithm`. |
 | `Encoding` | `Util.i2osp2`, `Labeled_kdf` | `suite_id` and the KEM suite id are the RFC's and injective. `LabeledExtract`, `LabeledExpand` and `LabeledDerive` build exactly the specified inputs. The key-schedule context separates modes. The internal `I2OSP(·, 2)` never raises. RFC 9180's unchecked input-length limits exceed every OCaml string. |
 | `Sequence` | `sequence_exhausted`, `increment_sequence`, `nonce` | The increment is `+1 mod 256^n`. Exhaustion holds exactly at `2^96 - 1`. The nonce is `ComputeNonce`. Distinct sequence numbers give distinct nonces. |
 | `Atomicity` | `increment_sequence`, one byte store at a time | Finding 3. The fix computes the same increment on every input, and none of its intermediate states is below the new value. |
 | `AeadLimits` | `Aead.plaintext_fits` and its callers | Finding 1, and the proof that `2^36 - 32` is exact for every AEAD and length. |
-| `Scalar` | `curve_order`, `valid_nist_scalar`, `all_zero`, clamping, `derive_key_pair`, `generate_key_pair` | The curve orders equal OpenSSL's. `valid_nist_scalar b ↔ 0 < OS2IP(b) < n`, including `Eqaf.compare_be` modelled bit-exactly. Rejection sampling equals RFC 9180 §7.1.3. Clamping is RFC 7748's decodeScalar and idempotent. |
-| `Keys` | `parse_public_bytes`, `Public_key`, `Private_key`, `dh` | Lengths are checked first. NIST keys must be uncompressed SEC1. A parsed key re-serializes to its input. `dh` returns `Key_mismatch` before any exchange. |
-| `Kem` | `encap_with`, `dh_decap`, `encap`, `decap`, `Mlkem_kem` | The code is RFC 9180's `Encap`, `Decap`, `AuthEncap` and `AuthDecap`, and the draft's ML-KEM KEM. Decapsulation recovers the encapsulated secret. A sender key on ML-KEM is `Unsupported_mode`, never dropped. The error mapping holds. |
+| `Scalar` | `curve_order`, `valid_nist_scalar`, `all_zero`, clamping, `derive_key_pair`, `generate_key_pair` | The curve orders equal OpenSSL's. `valid_nist_scalar b ↔ 0 < OS2IP(b) < n`, including `Eqaf.compare_be` modelled bit-exactly. Rejection sampling equals RFC 9180 §7.1.3. The hybrids' `random_scalar` is the concrete draft's `RandomScalar` and never yields a zero scalar. Clamping is RFC 7748's decodeScalar and idempotent. |
+| `Keys` | `parse_public_bytes`, `Public_key`, `Private_key`, `dh` | Lengths are checked first. NIST keys, and the NIST elements of hybrid keys, must be uncompressed SEC1. A hybrid key's ML-KEM half passes the modulus check. A parsed key re-serializes to its input. `dh` returns `Key_mismatch` before any exchange. |
+| `Kem` | `encap_with`, `dh_decap`, `encap`, `decap`, `Mlkem_kem`, `Hybrid_kem` | The code is RFC 9180's `Encap`, `Decap`, `AuthEncap` and `AuthDecap`, the draft's ML-KEM KEM, and the CG framework's `DeriveKeyPair`, `Encaps` and `Decaps` for the hybrids. Decapsulation recovers the encapsulated secret. The hybrids' `encap` uses the first of its eight draws that holds a scalar. A sender key on ML-KEM or a hybrid is `Unsupported_mode`, never dropped. The error mapping holds. |
 | `Setup` | `Psk`, `key_schedule`, `check_*`, `setup_*`, `normalized_open`, `Private` | Every typed mode passes `VerifyPSKInputs`. The key schedule is the RFC's, and sender and receiver agree. Every error contract in `hpke.mli` holds, and a computable table predicts every setup result. |
 | `TLA` | (foundation) | Specifications, invariants, behaviours, and stuttering refinement. |
 | `Context` | `with_busy`, `seal`, `open_ciphertext` | For any number of domains: mutual exclusion; no nonce reuse (the nonces used are exactly `ComputeNonce(0..k-1)`); the all-ones nonce is never used; and the implementation refines RFC 9180's atomic context. |
@@ -119,15 +120,22 @@ Also found, but not bugs:
 
 The following are assumed, not proved:
 
-* **Primitives.** The HKDF, AES-GCM, ChaCha20-Poly1305, SHAKE256, ML-KEM and
-  curve implementations of mirage-crypto, digestif, kdf, curve448 and mlkem.
-  * `Kem.lean` states what it needs as named hypotheses: DH commutativity,
+* **Primitives.** The HKDF, AES-GCM, ChaCha20-Poly1305, SHAKE256, SHA3-256,
+  ML-KEM and curve implementations of mirage-crypto, digestif, kdf, curve448
+  and mlkem.
+  * `Kem.lean` states what it needs as named hypotheses: DH commutativity
+    (for the hybrids' nominal groups too), SHAKE256 and ciphertext lengths,
     canonical point encodings, FIPS 203 correctness, and parsers accepting
     what the serializers produce.
   * The AEAD is abstracted as INT-CTXT in `Channel` and the TLA+ models.
   * The mirage-crypto block-count checks are transcribed from its source, as
     are eqaf's `compare_be` and the NIST point checks. The conformance test
     exercises them where it can.
+* **`Hpke.Draft_hpke_04`.** The module of the successor draft came after the
+  mirrors, and its one-stage key schedule and export are not yet transcribed.
+  With an HKDF it runs the `Rfc9180` code that the mirrors cover. Its SHAKE
+  path is checked by the known-answer vectors of `draft-ietf-hpke-pq-05`, the
+  unit tests and the fuzzer.
 * **The mirrors.** They are hand-written transcriptions of the OCaml.
   `conformance/` checks them on concrete inputs, not symbolically.
   `Sys.max_string_length` and the placement of poll points (read from

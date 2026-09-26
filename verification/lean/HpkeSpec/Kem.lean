@@ -5,8 +5,9 @@ import HpkeSpec.Registry
 # KEM correctness
 
 The KEM layer of `lib/hpke.ml` (lines 744-870): `dh`, `extract_and_expand`,
-`encap_with`, `encap`, `dh_decap`, `decap`, `mlkem_without_sender` and the
-`Mlkem_kem` functor (lines 385-413).
+`encap_with`, `encap`, `dh_decap`, `decap`, `mlkem_without_sender`, the
+`Mlkem_kem` functor (lines 385-413), and the `Hybrid_kem` functor of the PQ/T
+hybrids with its nominal groups.
 
 The cryptographic primitives are abstract. A Diffie-Hellman group is a record
 of functions (`DhGroup`), an ML-KEM parameter set is another (`MlKem`), and the
@@ -19,8 +20,9 @@ Three kinds of definition appear:
 
 * *mirrors* (`dh`, `encapWith`, `dhDecap`, `encap`, `decap`, `MlkemKem.*`)
   transcribe the OCaml, keeping its order of checks and its error constructors;
-* *specifications* (`Rfc.*`, `Draft.*`) transcribe the pseudocode of
-  RFC 9180 Section 4.1 and of draft-ietf-hpke-pq-05 Section 3;
+* *specifications* (`Rfc.*`, `Draft.*`, `HybridKem.CG.*`) transcribe the
+  pseudocode of RFC 9180 Section 4.1, of draft-ietf-hpke-pq-05 Section 3, and
+  of the CG framework of draft-irtf-cfrg-hybrid-kems Section 5;
 * theorems relating them.
 
 A remark on `Decap`: RFC 9180 puts the received `enc` itself (not
@@ -154,71 +156,6 @@ def CiphertextRoundTrip : Prop := ∀ c : M.CT, M.ctOfOctets (M.ctToOctets c) = 
 
 end MlKem
 
-/-- The primitives of every KEM of the registry: one Diffie-Hellman group and
-one ML-KEM parameter set per identifier (only the right kind is ever used for
-a given identifier), and the labeled KDF. -/
-structure Prims where
-  kdf : KemKdf
-  G : KemId → DhGroup
-  M : KemId → MlKem
-
-variable (P : Prims)
-
-/-! ## Keys (lines 419-590) -/
-
-/-- `public_material` (lines 422-426): nothing for a DHKEM, whose key is used as
-bytes, and the parsed encapsulation key for ML-KEM. -/
-inductive PublicMaterial (kem : KemId) where
-  | dhPublic
-  | mlkem (ek : (P.M kem).EK)
-
-/-- `Public_key.t` (line 482). -/
-structure PublicKey where
-  kem : KemId
-  bytes : Bytes
-  material : PublicMaterial P kem
-
-/-- `kem_secret` (lines 496-504). -/
-inductive Secret (kem : KemId) where
-  | dh (sk : (P.G kem).SK)
-  | mlkem (dk : (P.M kem).DK)
-
-/-- `Private_key.t` (lines 561-566). -/
-structure PrivateKey where
-  kem : KemId
-  bytes : Bytes
-  secret : Secret P kem
-  publicKey : PublicKey P
-
-/-- Mirror of `Public_key.of_bytes` with `parse_public_bytes` (lines 428-490). -/
-def publicKeyOfBytes (kem : KemId) (bytes : Bytes) : Except Err (PublicKey P) :=
-  if kem.isDh then
-    match (P.G kem).deserialize bytes with
-    | .error reason => .error (.invalidPublicKey reason)
-    | .ok _ => .ok { kem, bytes, material := .dhPublic }
-  else
-    match (P.M kem).ekOfOctets bytes with
-    | .error reason => .error (.invalidPublicKey reason)
-    | .ok ek => .ok { kem, bytes, material := .mlkem ek }
-
-/-- The public key `Public_key.of_bytes ~kem bytes` returns for a DHKEM when
-parsing succeeds. -/
-def dhPublicKey (kem : KemId) (bytes : Bytes) : PublicKey P :=
-  { kem, bytes, material := .dhPublic }
-
-/-- The private key `Private_key.of_bytes` returns for a DHKEM secret `sk`
-(lines 509-515, 568-585): its public half is the library's encoding of
-`pk(sk)`, reparsed by `Public_key.of_bytes` (see `publicKeyOfBytes_publicOctets`). -/
-def dhPrivateKey (kem : KemId) (bytes : Bytes) (sk : (P.G kem).SK) : PrivateKey P :=
-  { kem, bytes, secret := .dh sk, publicKey := dhPublicKey P kem ((P.G kem).publicOctets sk) }
-
-/-- The private key `Private_key.of_bytes` returns for an ML-KEM seed whose
-expanded decapsulation key is `dk` (lines 516-521, 568-585). -/
-def mlkemPrivateKey (kem : KemId) (seed : Bytes) (dk : (P.M kem).DK) : PrivateKey P :=
-  { kem, bytes := seed, secret := .mlkem dk,
-    publicKey := { kem, bytes := (P.M kem).ekToOctets ((P.M kem).ekOfDk dk),
-                   material := .mlkem ((P.M kem).ekOfDk dk) } }
-
 /-! ## `Mlkem_kem` (lines 385-413) -/
 
 namespace MlkemKem
@@ -251,6 +188,233 @@ def decap (secret : M.DK) (encapsulatedKey : Bytes) : Except Err Bytes :=
 
 end MlkemKem
 
+/-- A nominal group as `Hybrid_kem` uses it (the OCaml `NOMINAL_GROUP`
+signature, draft-irtf-cfrg-hybrid-kems Section 3.2).
+
+* `randomScalar seed` is `random_scalar`: `RandomScalar(seed)` together with
+  `Exp(g, scalar)`, or `none` when the seed holds no valid scalar. For P-256
+  and P-384 its choice of scalar is `Scalar.randomScalar`, proved equal to the
+  concrete draft's loop in `Scalar.lean`; for X25519 the seed is the scalar.
+* `checkElement` is `check_element`, applied to a received public element.
+  The OCaml returns an `Error.t`, always `Invalid_public_key` (from
+  `nist_public_key`); the mirror keeps its reason.
+* `sharedSecret sk e` is `shared_secret`:
+  `ElementToSharedSecret(Exp(e, sk))`, or the reason `e` was refused. -/
+structure NominalGroup where
+  Scalar : Type
+  randomScalar : Bytes → Option (Scalar × Bytes)
+  checkElement : Bytes → Except String Unit
+  sharedSecret : Scalar → Bytes → Except String Bytes
+
+namespace NominalGroup
+
+variable (G : NominalGroup)
+
+/-- **Assumption** (the Diffie-Hellman property on elements): two scalars
+reach the same shared secret from each other's element. -/
+def Commutes : Prop :=
+  ∀ (s₁ s₂ : Bytes) (a b : G.Scalar) (ea eb : Bytes),
+    G.randomScalar s₁ = some (a, ea) → G.randomScalar s₂ = some (b, eb) →
+      G.sharedSecret a eb = G.sharedSecret b ea
+
+/-- **Assumption**: elements have the fixed length `Nelem`. -/
+def ElementLength (n : Nat) : Prop :=
+  ∀ (s : Bytes) (a : G.Scalar) (e : Bytes), G.randomScalar s = some (a, e) → e.length = n
+
+/-- **Assumption**: an element the exchange accepts also passes the public-key
+check. For P-256 and P-384 both are mirage-crypto-ec's point decoding; for
+X25519 the check accepts everything. -/
+def CheckElementSound : Prop :=
+  ∀ (sk : G.Scalar) (e v : Bytes), G.sharedSecret sk e = .ok v → G.checkElement e = .ok ()
+
+end NominalGroup
+
+/-- The components of one `Hybrid_kem` functor application: its `Params`
+(`kem`, `pq`, `label`), the ML-KEM parameter set `M`, the nominal group `G`
+with its `Nseed` and `Nelem`, SHAKE256 as the PRG (`prg seed n`, the first
+`n` bytes), SHA3-256 as the KDF, and `coins`, the ML-KEM randomness that
+`~random:(fun _ -> String.sub randomness 0 32)` makes of 32 bytes. -/
+structure HybridPrims where
+  kem : KemId
+  pq : KemId
+  M : MlKem
+  G : NominalGroup
+  seedSize : Nat
+  elementSize : Nat
+  prg : Bytes → Nat → Bytes
+  kdf : Bytes → Bytes
+  coins : Bytes → M.Coins
+  label : Bytes
+
+/-! ## `Hybrid_kem` -/
+
+namespace HybridKem
+
+variable (H : HybridPrims)
+
+/-- `Hybrid_kem.public`. -/
+structure Public where
+  pq : H.M.EK
+  element : Bytes
+
+/-- `Hybrid_kem.secret`. -/
+structure Secret where
+  pq : H.M.DK
+  scalar : H.G.Scalar
+  ownElement : Bytes
+
+/-- `Hybrid_kem.public_key`; the caller has checked the length. -/
+def publicKey (bytes : Bytes) : Except Err (Public H) := do
+  let pq ← MlkemKem.publicKey H.M (bytes.take H.pq.publicKeySize)
+  let element := (bytes.drop H.pq.publicKeySize).take H.elementSize
+  match H.G.checkElement element with
+  | .error reason => .error (.invalidPublicKey reason)
+  | .ok () => pure ⟨pq, element⟩
+
+/-- `Hybrid_kem.private_key`: `expandDecapsKey`, with the public key's
+encoding. -/
+def privateKey (seed : Bytes) : Except Err (Secret H × Public H × Bytes) :=
+  let expanded := H.prg seed (H.pq.privateKeySize + H.seedSize)
+  match H.G.randomScalar ((expanded.drop H.pq.privateKeySize).take H.seedSize) with
+  | none => .error (.invalidPrivateKey "the seed yields no scalar")
+  | some (scalar, ownElement) =>
+    match MlkemKem.privateKey H.M (expanded.take H.pq.privateKeySize) with
+    | .error e => .error e
+    | .ok (pqSecret, pqPublic, pqBytes) =>
+      .ok (⟨pqSecret, scalar, ownElement⟩, ⟨pqPublic, ownElement⟩, pqBytes ++ ownElement)
+
+/-- `Hybrid_kem.combine`. -/
+def combine (pqSecret groupSecret groupCiphertext element : Bytes) : Bytes :=
+  H.kdf (pqSecret ++ groupSecret ++ groupCiphertext ++ element ++ H.label)
+
+/-- The `attempt` loop of `Hybrid_kem.encap`. `draw made` is the
+`(32 + Nseed)`-byte output of the generator's `made`-th call, and `remaining`
+OCaml's counter. -/
+def attempt (draw : Nat → Bytes) (pub : Public H) (made remaining : Nat) :
+    Except Err (Bytes × Bytes) :=
+    let randomness := draw made
+    match H.G.randomScalar ((randomness.drop 32).take H.seedSize) with
+    | none =>
+      if remaining > 1 then attempt draw pub (made + 1) (remaining - 1)
+      else .error (.internalError "no ephemeral scalar could be sampled")
+    | some (ephemeral, groupCiphertext) =>
+      match H.G.sharedSecret ephemeral pub.element with
+      | .error reason => .error (.invalidPublicKey reason)
+      | .ok groupSecret =>
+        let (pqSecret, pqCiphertext) :=
+          MlkemKem.encap H.M (H.coins (randomness.take 32)) pub.pq
+        .ok (combine H pqSecret groupSecret groupCiphertext pub.element,
+          pqCiphertext ++ groupCiphertext)
+termination_by remaining
+decreasing_by omega
+
+/-- `Hybrid_kem.encap`: `attempt 8`. -/
+def encap (draw : Nat → Bytes) (pub : Public H) : Except Err (Bytes × Bytes) :=
+  attempt H draw pub 0 8
+
+/-- `Hybrid_kem.decap`. -/
+def decap (sec : Secret H) (encapsulatedKey : Bytes) : Except Err Bytes :=
+  if encapsulatedKey.length ≠ H.kem.encapsulatedKeySize then
+    .error (.invalidEncapsulation "wrong encoded length")
+  else
+    let groupCiphertext :=
+      (encapsulatedKey.drop H.pq.encapsulatedKeySize).take H.elementSize
+    match H.G.sharedSecret sec.scalar groupCiphertext with
+    | .error reason => .error (.invalidEncapsulation reason)
+    | .ok groupSecret =>
+      match MlkemKem.decap H.M sec.pq (encapsulatedKey.take H.pq.encapsulatedKeySize) with
+      | .error e => .error e
+      | .ok pqSecret => .ok (combine H pqSecret groupSecret groupCiphertext sec.ownElement)
+
+/-- `public_key` fails only with `Invalid_public_key`. -/
+theorem publicKey_error (bytes : Bytes) (e : Err) (h : publicKey H bytes = .error e) :
+    ∃ r, e = .invalidPublicKey r := by
+  unfold publicKey MlkemKem.publicKey at h
+  cases h1 : H.M.ekOfOctets (bytes.take H.pq.publicKeySize) with
+  | error r => simp [h1, bind, Except.bind] at h; exact ⟨r, h.symm⟩
+  | ok ek =>
+    cases h2 : H.G.checkElement ((bytes.drop H.pq.publicKeySize).take H.elementSize) with
+    | error r => simp [h1, h2, bind, Except.bind] at h; exact ⟨r, h.symm⟩
+    | ok u => simp [h1, h2, bind, Except.bind, pure, Except.pure] at h
+
+end HybridKem
+
+/-- The primitives of every KEM of the registry: one Diffie-Hellman group, one
+ML-KEM parameter set and one hybrid per identifier (only the right kind is ever
+used for a given identifier), and the labeled KDF. -/
+structure Prims where
+  kdf : KemKdf
+  G : KemId → DhGroup
+  M : KemId → MlKem
+  H : KemId → HybridPrims
+
+variable (P : Prims)
+
+/-! ## Keys (lines 419-590) -/
+
+/-- `public_material` (lines 422-426): nothing for a DHKEM, whose key is used as
+bytes, the parsed encapsulation key for ML-KEM, and `Hybrid_kem.public` for a
+hybrid. -/
+inductive PublicMaterial (kem : KemId) where
+  | dhPublic
+  | mlkem (ek : (P.M kem).EK)
+  | hybrid (pub : HybridKem.Public (P.H kem))
+
+/-- `Public_key.t` (line 482). -/
+structure PublicKey where
+  kem : KemId
+  bytes : Bytes
+  material : PublicMaterial P kem
+
+/-- `kem_secret` (lines 496-504). -/
+inductive Secret (kem : KemId) where
+  | dh (sk : (P.G kem).SK)
+  | mlkem (dk : (P.M kem).DK)
+  | hybrid (sec : HybridKem.Secret (P.H kem))
+
+/-- `Private_key.t` (lines 561-566). -/
+structure PrivateKey where
+  kem : KemId
+  bytes : Bytes
+  secret : Secret P kem
+  publicKey : PublicKey P
+
+/-- Mirror of `Public_key.of_bytes` with `parse_public_bytes` (lines 428-490). -/
+def publicKeyOfBytes (kem : KemId) (bytes : Bytes) : Except Err (PublicKey P) :=
+  if kem.isDh then
+    match (P.G kem).deserialize bytes with
+    | .error reason => .error (.invalidPublicKey reason)
+    | .ok _ => .ok { kem, bytes, material := .dhPublic }
+  else if kem.isHybrid then
+    if bytes.length ≠ kem.publicKeySize then .error (.invalidPublicKey "wrong encoded length")
+    else
+      match HybridKem.publicKey (P.H kem) bytes with
+      | .error e => .error e
+      | .ok pub => .ok { kem, bytes, material := .hybrid pub }
+  else
+    match (P.M kem).ekOfOctets bytes with
+    | .error reason => .error (.invalidPublicKey reason)
+    | .ok ek => .ok { kem, bytes, material := .mlkem ek }
+
+/-- The public key `Public_key.of_bytes ~kem bytes` returns for a DHKEM when
+parsing succeeds. -/
+def dhPublicKey (kem : KemId) (bytes : Bytes) : PublicKey P :=
+  { kem, bytes, material := .dhPublic }
+
+/-- The private key `Private_key.of_bytes` returns for a DHKEM secret `sk`
+(lines 509-515, 568-585): its public half is the library's encoding of
+`pk(sk)`, reparsed by `Public_key.of_bytes` (see `publicKeyOfBytes_publicOctets`). -/
+def dhPrivateKey (kem : KemId) (bytes : Bytes) (sk : (P.G kem).SK) : PrivateKey P :=
+  { kem, bytes, secret := .dh sk, publicKey := dhPublicKey P kem ((P.G kem).publicOctets sk) }
+
+/-- The private key `Private_key.of_bytes` returns for an ML-KEM seed whose
+expanded decapsulation key is `dk` (lines 516-521, 568-585). -/
+def mlkemPrivateKey (kem : KemId) (seed : Bytes) (dk : (P.M kem).DK) : PrivateKey P :=
+  { kem, bytes := seed, secret := .mlkem dk,
+    publicKey := { kem, bytes := (P.M kem).ekToOctets ((P.M kem).ekOfDk dk),
+                   material := .mlkem ((P.M kem).ekOfDk dk) } }
+
+
 /-- Mirror of `Private_key.of_bytes` for an ML-KEM identifier (lines 568-585
 with the `mlkem` branch of `secret_and_public`); the length check of line 569
 is part of `dkOfSeed`. -/
@@ -274,6 +438,8 @@ def dh (sk : PrivateKey P) (pk : PublicKey P) : Except Err Bytes :=
       | .error reason => .error (.invalidPublicKey reason)
     | .mlkem _ =>
       .error (.invalidPrivateKey "ML-KEM keys cannot perform a Diffie-Hellman exchange")
+    | .hybrid _ =>
+      .error (.invalidPrivateKey "hybrid KEM keys cannot perform a Diffie-Hellman exchange")
 
 /-- Mirror of `extract_and_expand` (lines 771-774). -/
 def extractAndExpand (kem : KemId) (dh kemContext : Bytes) : Bytes :=
@@ -302,9 +468,10 @@ def mlkemWithoutSender {α : Type} : Option α → Except Err Unit
 
 /-- Mirror of `encap` (lines 808-822). The generator's effects are explicit:
 `generate kem` is what `generate_key_pair ~rng kem` returns (its private half),
-and `coins kem` is the randomness `Mlkem_kem.encap ~random` draws. -/
+`coins kem` is the randomness `Mlkem_kem.encap ~random` draws, and
+`draw kem i` the `i`-th draw of `Hybrid_kem.encap`. -/
 def encap (generate : KemId → Except Err (PrivateKey P))
-    (coins : (kem : KemId) → (P.M kem).Coins)
+    (coins : (kem : KemId) → (P.M kem).Coins) (draw : KemId → Nat → Bytes)
     (sender : Option (PrivateKey P)) (recipient : PublicKey P) :
     Except Err (Bytes × Bytes) :=
   match recipient.material with
@@ -314,6 +481,9 @@ def encap (generate : KemId → Except Err (PrivateKey P))
   | .mlkem pub => do
     mlkemWithoutSender sender
     pure (MlkemKem.encap (P.M recipient.kem) (coins recipient.kem) pub)
+  | .hybrid pub => do
+    mlkemWithoutSender sender
+    HybridKem.encap (P.H recipient.kem) (draw recipient.kem) pub
 
 /-- Mirror of `dh_decap` (lines 824-855). -/
 def dhDecap (recipient : PrivateKey P) (sender : Option (PublicKey P))
@@ -345,6 +515,9 @@ def decap (recipient : PrivateKey P) (sender : Option (PublicKey P))
   | .mlkem secret => do
     mlkemWithoutSender sender
     MlkemKem.decap (P.M recipient.kem) secret encapsulatedKey
+  | .hybrid secret => do
+    mlkemWithoutSender sender
+    HybridKem.decap (P.H recipient.kem) secret encapsulatedKey
 
 /-! ## RFC 9180 Section 4.1, transcribed -/
 
@@ -561,9 +734,22 @@ theorem publicKeyOfBytes_publicOctets (kem : KemId) (hdh : kem.isDh = true)
 theorem publicKeyOfBytes_error (kem : KemId) (b : Bytes) (e : Err)
     (h : publicKeyOfBytes P kem b = .error e) : ∃ r, e = .invalidPublicKey r := by
   unfold publicKeyOfBytes at h
-  split at h
-  · split at h <;> cases h; exact ⟨_, rfl⟩
-  · split at h <;> cases h; exact ⟨_, rfl⟩
+  by_cases hd : kem.isDh = true
+  · rw [ite_eq_left hd] at h
+    split at h <;> cases h; exact ⟨_, rfl⟩
+  · rw [ite_eq_right hd] at h
+    by_cases hh : kem.isHybrid = true
+    · rw [ite_eq_left hh] at h
+      by_cases hl : b.length ≠ kem.publicKeySize
+      · rw [ite_eq_left hl] at h; cases h; exact ⟨_, rfl⟩
+      · rw [ite_eq_right hl] at h
+        cases hp : HybridKem.publicKey (P.H kem) b with
+        | error e' =>
+          rw [hp] at h; cases h
+          exact HybridKem.publicKey_error (P.H kem) b _ hp
+        | ok pub => rw [hp] at h; cases h
+    · rw [ite_eq_right hh] at h
+      split at h <;> cases h; exact ⟨_, rfl⟩
 
 /-! ## 1. Mirrors equal the RFC -/
 
@@ -757,6 +943,12 @@ def prims : Prims where
   kdf := { labeledExtract := fun _ _ _ _ => [], labeledExpand := fun _ _ _ info _ => info }
   G := fun _ => grp
   M := fun _ => mlkem
+  H := fun _ =>
+    { kem := .mlkem768X25519, pq := .mlkem768, M := mlkem,
+      G := { Scalar := Unit, randomScalar := fun _ => none, checkElement := fun _ => .ok (),
+             sharedSecret := fun _ _ => .ok [] },
+      seedSize := 0, elementSize := 0, prg := fun _ _ => [], kdf := id, coins := fun _ => (),
+      label := [] }
 
 end Counterexample
 
@@ -855,9 +1047,10 @@ theorem decap_encap_dh (kem : KemId) (hdh : kem.isDh = true)
     (hC : (P.G kem).DhCommutes) (hR : (P.G kem).SerializeRoundTrip)
     (hX : (P.G kem).ExchangeIsDh) (hO : (P.G kem).PublicOctetsSerialize)
     (generate : KemId → Except Err (PrivateKey P)) (coins : (k : KemId) → (P.M k).Coins)
+    (draw : KemId → Nat → Bytes)
     (hgen : ∀ e, generate kem = .ok e → ∃ eb skE, e = dhPrivateKey P kem eb skE)
     (rb : Bytes) (skR : (P.G kem).SK) {ss enc : Bytes}
-    (h : encap P generate coins none (dhPrivateKey P kem rb skR).publicKey = .ok (ss, enc)) :
+    (h : encap P generate coins draw none (dhPrivateKey P kem rb skR).publicKey = .ok (ss, enc)) :
     decap P (dhPrivateKey P kem rb skR) none enc = .ok ss := by
   simp only [encap, dhPrivateKey, dhPublicKey] at h
   cases hg : generate kem with
@@ -872,9 +1065,10 @@ theorem decap_encap_dh_auth (kem : KemId) (hdh : kem.isDh = true)
     (hC : (P.G kem).DhCommutes) (hR : (P.G kem).SerializeRoundTrip)
     (hX : (P.G kem).ExchangeIsDh) (hO : (P.G kem).PublicOctetsSerialize)
     (generate : KemId → Except Err (PrivateKey P)) (coins : (k : KemId) → (P.M k).Coins)
+    (draw : KemId → Nat → Bytes)
     (hgen : ∀ e, generate kem = .ok e → ∃ eb skE, e = dhPrivateKey P kem eb skE)
     (rb sb : Bytes) (skR skS : (P.G kem).SK) {ss enc : Bytes}
-    (h : encap P generate coins (some (dhPrivateKey P kem sb skS))
+    (h : encap P generate coins draw (some (dhPrivateKey P kem sb skS))
       (dhPrivateKey P kem rb skR).publicKey = .ok (ss, enc)) :
     decap P (dhPrivateKey P kem rb skR) (some (dhPrivateKey P kem sb skS).publicKey) enc
       = .ok ss := by
@@ -907,8 +1101,9 @@ theorem mlkemPrivateKeyOfBytes_ok (kem : KemId) (seed : Bytes) (dk : (P.M kem).D
 theorem decap_encap_mlkem (kem : KemId)
     (hC : (P.M kem).Correct) (hCt : (P.M kem).CiphertextRoundTrip)
     (generate : KemId → Except Err (PrivateKey P)) (coins : (k : KemId) → (P.M k).Coins)
+    (draw : KemId → Nat → Bytes)
     (seed : Bytes) (dk : (P.M kem).DK) {ss enc : Bytes}
-    (h : encap P generate coins none (mlkemPrivateKey P kem seed dk).publicKey = .ok (ss, enc)) :
+    (h : encap P generate coins draw none (mlkemPrivateKey P kem seed dk).publicKey = .ok (ss, enc)) :
     decap P (mlkemPrivateKey P kem seed dk) none enc = .ok ss := by
   simp [encap, mlkemPrivateKey, mlkemWithoutSender, bind, Except.bind, pure, Except.pure] at h
   obtain ⟨rfl, rfl⟩ := h
@@ -919,17 +1114,18 @@ theorem decap_encap_mlkem (kem : KemId)
 /-- ML-KEM `encap` never draws an ephemeral key pair: it does not call the
 generator (Mlkem material). -/
 theorem encap_mlkem_ignores_generate (generate₁ generate₂ : KemId → Except Err (PrivateKey P))
-    (coins : (k : KemId) → (P.M k).Coins) (sender : Option (PrivateKey P))
+    (coins : (k : KemId) → (P.M k).Coins) (draw : KemId → Nat → Bytes)
+    (sender : Option (PrivateKey P))
     (kem : KemId) (bytes : Bytes) (ek : (P.M kem).EK) :
-    encap P generate₁ coins sender { kem, bytes, material := .mlkem ek }
-      = encap P generate₂ coins sender { kem, bytes, material := .mlkem ek } := rfl
+    encap P generate₁ coins draw sender { kem, bytes, material := .mlkem ek }
+      = encap P generate₂ coins draw sender { kem, bytes, material := .mlkem ek } := rfl
 
 /-- A sender key is never silently dropped: `encap` with a sender on ML-KEM
 material is `Unsupported_mode`. -/
 theorem encap_mlkem_sender (generate : KemId → Except Err (PrivateKey P))
-    (coins : (k : KemId) → (P.M k).Coins) (s : PrivateKey P)
+    (coins : (k : KemId) → (P.M k).Coins) (draw : KemId → Nat → Bytes) (s : PrivateKey P)
     (kem : KemId) (bytes : Bytes) (ek : (P.M kem).EK) :
-    encap P generate coins (some s) { kem, bytes, material := .mlkem ek }
+    encap P generate coins draw (some s) { kem, bytes, material := .mlkem ek }
       = .error .unsupportedMode := rfl
 
 /-- ... nor by `decap`. -/
@@ -940,9 +1136,9 @@ theorem decap_mlkem_sender (s : PublicKey P) (kem : KemId) (bytes : Bytes)
 
 /-- The same two facts for any key value, whatever its record fields. -/
 theorem encap_sender_mlkem_material (generate : KemId → Except Err (PrivateKey P))
-    (coins : (k : KemId) → (P.M k).Coins) (s : PrivateKey P) (recipient : PublicKey P)
+    (coins : (k : KemId) → (P.M k).Coins) (draw : KemId → Nat → Bytes) (s : PrivateKey P) (recipient : PublicKey P)
     (ek : (P.M recipient.kem).EK) (h : recipient.material = .mlkem ek) :
-    encap P generate coins (some s) recipient = .error .unsupportedMode := by
+    encap P generate coins draw (some s) recipient = .error .unsupportedMode := by
   unfold encap; rw [h]; rfl
 
 theorem decap_sender_mlkem_secret (s : PublicKey P) (recipient : PrivateKey P)
@@ -952,12 +1148,14 @@ theorem decap_sender_mlkem_secret (s : PublicKey P) (recipient : PrivateKey P)
 
 /-- Parsing a recipient key and running `encap` on it is the draft's `Encap`. -/
 theorem encap_mlkem_eq_Draft (kem : KemId) (hml : kem.isDh = false)
+    (hhy : kem.isHybrid = false)
     (generate : KemId → Except Err (PrivateKey P)) (coins : (k : KemId) → (P.M k).Coins)
+    (draw : KemId → Nat → Bytes)
     (pkR : Bytes) :
-    ((publicKeyOfBytes P kem pkR).bind (encap P generate coins none)).toOption
+    ((publicKeyOfBytes P kem pkR).bind (encap P generate coins draw none)).toOption
       = Draft.Encap (P.M kem) pkR (coins kem) := by
   unfold publicKeyOfBytes Draft.Encap
-  simp only [hml]
+  simp only [hml, hhy]
   cases h : (P.M kem).ekOfOctets pkR with
   | error r => simp [Except.bind, Except.toOption]
   | ok ek =>
@@ -1102,6 +1300,466 @@ theorem decap_mlkem_not_caller_error (kem : KemId) (seed : Bytes) (dk : (P.M kem
     ⟨h, _⟩ | ⟨_, r, rfl, _⟩
   · cases h
   · exact ⟨nofun, nofun⟩
+
+/-! ## 5. PQ/T hybrid KEMs
+
+`Hybrid_kem` against the CG framework of draft-irtf-cfrg-hybrid-kems
+(Section 5.4, with the subroutines of Section 5.1), as
+draft-irtf-cfrg-concrete-hybrid-kems instantiates it and draft-ietf-hpke-pq-05
+Section 4 adopts it for HPKE. -/
+
+namespace HybridKem
+
+variable (H : HybridPrims)
+
+/-- **Assumption** on SHAKE256: `prg seed n` is `n` bytes long. -/
+def PrgLength : Prop := ∀ (seed : Bytes) (n : Nat), (H.prg seed n).length = n
+
+/-- **Assumption** on the ML-KEM library: a ciphertext is `Nct` bytes long. -/
+def CiphertextLength : Prop := ∀ c : H.M.CT, (H.M.ctToOctets c).length = H.pq.encapsulatedKeySize
+
+/-- The hybrid's `Nct` is the ML-KEM `Nct` plus `Nelem`, which the registry
+proves for the three instances (`hybrid_sizes`). -/
+def SizesAgree : Prop := H.kem.encapsulatedKeySize = H.pq.encapsulatedKeySize + H.elementSize
+
+/-! ### The specification -/
+
+namespace CG
+
+/-- `split(N1, N2, x)`; calling it on a string of another length "is an error",
+here `none`. -/
+def split (n1 n2 : Nat) (x : Bytes) : Option (Bytes × Bytes) :=
+  if x.length = n1 + n2 then some (x.take n1, x.drop n1) else none
+
+/-- ```
+def expandDecapsKeyG(seed):
+    seed_full = PRG(seed)
+    (seed_PQ, seed_T) = split(KEM_PQ.Nseed, Group_T.Nseed, seed_full)
+
+    (dk_PQ, ek_PQ) = KEM_PQ.DeriveKeyPair(seed_PQ)
+    dk_T = Group_T.RandomScalar(seed_T)
+    ek_T = Group_T.Exp(Group_T.g, dk_T)
+
+    return (ek_PQ, ek_T, dk_PQ, dk_T)
+``` -/
+def expandDecapsKeyG (seed : Bytes) : Option (H.M.EK × Bytes × H.M.DK × H.G.Scalar) := do
+  let seed_full := H.prg seed (H.pq.privateKeySize + H.seedSize)
+  let (seed_PQ, seed_T) ← split H.pq.privateKeySize H.seedSize seed_full
+  let dk_PQ ← (H.M.dkOfSeed seed_PQ).toOption
+  let ek_PQ := H.M.ekOfDk dk_PQ
+  let (dk_T, ek_T) ← H.G.randomScalar seed_T
+  return (ek_PQ, ek_T, dk_PQ, dk_T)
+
+/-- ```
+def DeriveKeyPair(seed):
+    (ek_PQ, ek_T, dk_PQ, dk_T) = expandDecapsKeyG(seed)
+    return (seed, concat(ek_PQ, ek_T))
+``` -/
+def DeriveKeyPair (seed : Bytes) : Option (Bytes × Bytes) := do
+  let (ek_PQ, ek_T, _, _) ← expandDecapsKeyG H seed
+  return (seed, H.M.ekToOctets ek_PQ ++ ek_T)
+
+/-- `C2PRICombiner(ss_PQ, ss_T, ct_T, ek_T, label)`. -/
+def C2PRICombiner (ss_PQ ss_T ct_T ek_T label : Bytes) : Bytes :=
+  H.kdf (ss_PQ ++ ss_T ++ ct_T ++ ek_T ++ label)
+
+/-- ```
+def Encaps(ek):
+    (ek_PQ, ek_T) = split(KEM_PQ.Nek, Group_T.Nelem, ek)
+    (ss_PQ, ss_T, ct_PQ, ct_T) = prepareEncapsG(ek_PQ, ek_T)
+    ss_H = C2PRICombiner(ss_PQ, ss_T, ct_T, ek_T, Label)
+    ct_H = concat(ct_PQ, ct_T)
+    return (ss_H, ct_H)
+
+def prepareEncapsG(ek_PQ, ek_T):
+    (ss_PQ, ct_PQ) = KEM_PQ.Encaps(ek_PQ)
+    sk_E = Group_T.RandomScalar(random(Group_T.Nseed))
+    ct_T = Group_T.Exp(Group_T.g, sk_E)
+    ss_T = Group_T.ElementToSharedSecret(Group_T.Exp(ek_T, sk_E))
+    return (ss_PQ, ss_T, ct_PQ, ct_T)
+```
+with its randomness as arguments: `KEM_PQ.Encaps`'s, and `random(Nseed)`.
+`KEM_PQ.Encaps` includes the FIPS 203 input check, and `Exp` fails on an
+invalid element. -/
+def Encaps (ek : Bytes) (coins : H.M.Coins) (seedE : Bytes) : Option (Bytes × Bytes) := do
+  let (ek_PQ, ek_T) ← split H.pq.publicKeySize H.elementSize ek
+  let ekPQ ← (H.M.ekOfOctets ek_PQ).toOption
+  let (c, K) := H.M.encaps ekPQ coins
+  let (sk_E, ct_T) ← H.G.randomScalar seedE
+  let ss_T ← (H.G.sharedSecret sk_E ek_T).toOption
+  return (C2PRICombiner H (H.M.ssToOctets K) ss_T ct_T ek_T H.label, H.M.ctToOctets c ++ ct_T)
+
+/-- ```
+def Decaps(dk, ct):
+    (ct_PQ, ct_T) = split(KEM_PQ.Nct, Group_T.Nelem, ct)
+    (ek_PQ, ek_T, dk_PQ, dk_T) = expandDecapsKeyG(dk)
+    (ss_PQ, ss_T) = prepareDecapsG(ct_PQ, ct_T, dk_PQ, dk_T)
+    ss_H = C2PRICombiner(ss_PQ, ss_T, ct_T, ek_T, Label)
+    return ss_H
+
+def prepareDecapsG(ct_PQ, ct_T, dk_PQ, dk_T):
+    ss_PQ = KEM_PQ.Decaps(dk_PQ, ct_PQ)
+    ss_T = Group_T.ElementToSharedSecret(Group_T.Exp(ct_T, dk_T))
+    return (ss_PQ, ss_T)
+``` -/
+def Decaps (dk ct : Bytes) : Option Bytes := do
+  let (ct_PQ, ct_T) ← split H.pq.encapsulatedKeySize H.elementSize ct
+  let (_, ek_T, dk_PQ, dk_T) ← expandDecapsKeyG H dk
+  let c ← (H.M.ctOfOctets ct_PQ).toOption
+  let ss_T ← (H.G.sharedSecret dk_T ct_T).toOption
+  return C2PRICombiner H (H.M.ssToOctets (H.M.decaps dk_PQ c)) ss_T ct_T ek_T H.label
+
+end CG
+
+/-! ### The mirror is the specification -/
+
+private theorem split_prg (n s : Nat) (x : Bytes) (hl : x.length = n + s) :
+    CG.split n s x = some (x.take n, (x.drop n).take s) := by
+  unfold CG.split
+  rw [ite_eq_left hl]
+  simp only [Option.some.injEq, Prod.mk.injEq, true_and]
+  rw [List.take_of_length_le (by rw [List.length_drop]; omega)]
+
+set_option linter.unusedSimpArgs false in
+/-- `private_key` is `DeriveKeyPair`: it succeeds exactly when the draft's
+derivation does, with the same encapsulation key. -/
+theorem privateKey_eq_DeriveKeyPair (hP : PrgLength H) (seed : Bytes) :
+    (privateKey H seed).toOption.map (fun x => x.2.2) = (CG.DeriveKeyPair H seed).map Prod.snd := by
+  dsimp only [privateKey, CG.DeriveKeyPair, CG.expandDecapsKeyG]
+  have hlen := hP seed (H.pq.privateKeySize + H.seedSize)
+  generalize H.prg seed (H.pq.privateKeySize + H.seedSize) = x at hlen ⊢
+  rw [split_prg _ _ x hlen]
+  cases hs : H.G.randomScalar ((x.drop H.pq.privateKeySize).take H.seedSize) <;>
+  cases hd : H.M.dkOfSeed (x.take H.pq.privateKeySize) <;>
+  simp [hs, hd, MlkemKem.privateKey, Except.toOption, bind, Option.bind, pure]
+
+set_option linter.unusedSimpArgs false in
+/-- `decap` on the key `private_key` makes of a seed is `Decaps`. -/
+theorem decap_eq_Decaps (hP : PrgLength H) (hS : SizesAgree H) (dk ct : Bytes) :
+    ((privateKey H dk).bind fun x => decap H x.1 ct).toOption = CG.Decaps H dk ct := by
+  dsimp only [privateKey, CG.Decaps, CG.expandDecapsKeyG]
+  have hlen := hP dk (H.pq.privateKeySize + H.seedSize)
+  generalize H.prg dk (H.pq.privateKeySize + H.seedSize) = x at hlen ⊢
+  rw [split_prg _ _ x hlen]
+  by_cases hl : ct.length = H.pq.encapsulatedKeySize + H.elementSize
+  · rw [split_prg _ _ ct hl]
+    cases hs : H.G.randomScalar ((x.drop H.pq.privateKeySize).take H.seedSize) with
+    | none =>
+      cases hd : H.M.dkOfSeed (x.take H.pq.privateKeySize) <;>
+      simp [hs, hd, Except.bind, Except.toOption, bind, Option.bind]
+    | some p =>
+      obtain ⟨scalar, e⟩ := p
+      cases hd : H.M.dkOfSeed (x.take H.pq.privateKeySize) with
+      | error r => simp [hs, hd, MlkemKem.privateKey, Except.bind, Except.toOption, bind, Option.bind]
+      | ok dkPQ =>
+        simp only [hs, hd, MlkemKem.privateKey, Except.bind, Except.toOption, bind, Option.bind]
+        unfold decap
+        rw [hS, ite_eq_right (by omega)]
+        dsimp only
+        cases hg : H.G.sharedSecret scalar
+            ((ct.drop H.pq.encapsulatedKeySize).take H.elementSize) <;>
+        cases hc : H.M.ctOfOctets (ct.take H.pq.encapsulatedKeySize) <;>
+        simp [hs, hc, hg, MlkemKem.decap, combine, CG.C2PRICombiner, pure]
+  · have hsplit : CG.split H.pq.encapsulatedKeySize H.elementSize ct = none := by
+      simp [CG.split, hl]
+    rw [hsplit]
+    cases hs : H.G.randomScalar ((x.drop H.pq.privateKeySize).take H.seedSize) with
+    | none =>
+      cases hd : H.M.dkOfSeed (x.take H.pq.privateKeySize) <;>
+      simp [hs, hd, Except.bind, Except.toOption, bind, Option.bind]
+    | some p =>
+      obtain ⟨scalar, e⟩ := p
+      cases hd : H.M.dkOfSeed (x.take H.pq.privateKeySize) with
+      | error r => simp [hs, hd, MlkemKem.privateKey, Except.bind, Except.toOption, bind, Option.bind]
+      | ok dkPQ =>
+        simp only [hs, hd, MlkemKem.privateKey, Except.bind, Except.toOption, bind, Option.bind]
+        unfold decap
+        rw [hS, ite_eq_left (by omega)]
+
+/-! ### The retry loop of `encap` -/
+
+/-- One attempt of `encap` on the randomness of one draw: `none` if its group
+seed holds no scalar (the loop then draws again), else the attempt's result. -/
+def step (randomness : Bytes) (pub : Public H) : Option (Except Err (Bytes × Bytes)) :=
+  match H.G.randomScalar ((randomness.drop 32).take H.seedSize) with
+  | none => none
+  | some (ephemeral, groupCiphertext) =>
+    some (match H.G.sharedSecret ephemeral pub.element with
+      | .error reason => .error (.invalidPublicKey reason)
+      | .ok groupSecret =>
+        let (pqSecret, pqCiphertext) :=
+          MlkemKem.encap H.M (H.coins (randomness.take 32)) pub.pq
+        .ok (combine H pqSecret groupSecret groupCiphertext pub.element,
+          pqCiphertext ++ groupCiphertext))
+
+/-- The error of an encapsulation whose every draw failed. -/
+def exhausted : Except Err (Bytes × Bytes) :=
+  .error (.internalError "no ephemeral scalar could be sampled")
+
+private theorem attempt_eq (draw : Nat → Bytes) (pub : Public H) :
+    ∀ remaining made, attempt H draw pub made (remaining + 1)
+      = ((List.range (remaining + 1)).findSome? fun i => step H (draw (made + i)) pub).getD
+          (exhausted) := by
+  intro remaining
+  induction remaining with
+  | zero =>
+    intro made
+    rw [attempt]
+    simp only [Nat.zero_add, List.range_one, List.findSome?_cons, List.findSome?_nil,
+      Nat.add_zero]
+    unfold step
+    cases H.G.randomScalar (((draw made).drop 32).take H.seedSize) <;> rfl
+  | succ r ih =>
+    intro made
+    rw [attempt, List.range_succ_eq_map, List.findSome?_cons]
+    simp only [Nat.add_zero]
+    unfold step
+    cases hs : H.G.randomScalar (((draw made).drop 32).take H.seedSize) with
+    | some p => rfl
+    | none =>
+      simp only [ite_eq_left (show r + 1 + 1 > 1 by omega), Nat.add_sub_cancel]
+      rw [ih (made + 1), List.findSome?_map]
+      congr 2
+      funext i
+      rw [Function.comp_apply, show made + (i + 1) = made + 1 + i by omega]
+      rfl
+
+/-- `encap` returns the result of the first of its eight draws whose group seed
+holds a scalar, or `Internal_error` if none of them does. -/
+theorem encap_eq_first (draw : Nat → Bytes) (pub : Public H) :
+    encap H draw pub
+      = ((List.range 8).findSome? fun i => step H (draw i) pub).getD (exhausted) := by
+  unfold encap
+  rw [attempt_eq H draw pub 7 0]
+  simp
+
+/-- When all eight draws hold no scalar (for P-256 a chance below `2^-512`),
+`encap` fails with `Internal_error`. -/
+theorem encap_exhausted (draw : Nat → Bytes) (pub : Public H)
+    (h : ∀ i < 8, H.G.randomScalar (((draw i).drop 32).take H.seedSize) = none) :
+    encap H draw pub = exhausted := by
+  rw [encap_eq_first]
+  have : (List.range 8).findSome? (fun i => step H (draw i) pub) = none := by
+    rw [List.findSome?_eq_none_iff]
+    intro i hi
+    have := h i (List.mem_range.mp hi)
+    simp [step, this]
+  rw [this]; rfl
+
+/-- `encap` succeeds only as some draw's attempt does. -/
+theorem encap_ok_step {draw : Nat → Bytes} {pub : Public H} {r : Bytes × Bytes}
+    (h : encap H draw pub = .ok r) : ∃ i < 8, step H (draw i) pub = some (.ok r) := by
+  rw [encap_eq_first] at h
+  cases hf : (List.range 8).findSome? (fun i => step H (draw i) pub) with
+  | none => rw [hf] at h; cases h
+  | some x =>
+    rw [hf] at h
+    simp only [Option.getD_some] at h
+    subst h
+    obtain ⟨i, hi, hx⟩ := List.exists_of_findSome?_eq_some hf
+    exact ⟨i, List.mem_range.mp hi, hx⟩
+
+/-- `encap` fails only with `Invalid_public_key` (an element the exchange
+refuses, such as a low-order X25519 value) or `Internal_error`. -/
+theorem encap_error (draw : Nat → Bytes) (pub : Public H) (e : Err)
+    (h : encap H draw pub = .error e) :
+    (∃ r, e = .invalidPublicKey r) ∨ (∃ r, e = .internalError r) := by
+  rw [encap_eq_first] at h
+  cases hf : (List.range 8).findSome? (fun i => step H (draw i) pub) with
+  | none => rw [hf] at h; cases h; exact .inr ⟨_, rfl⟩
+  | some x =>
+    rw [hf] at h
+    simp only [Option.getD_some] at h
+    subst h
+    obtain ⟨i, _, hx⟩ := List.exists_of_findSome?_eq_some hf
+    unfold step at hx
+    split at hx
+    · cases hx
+    · split at hx <;> simp at hx
+      exact .inl ⟨_, hx.symm⟩
+
+/-- On a draw whose seed holds a scalar, parsing a public key and running
+`encap` is `Encaps` of the CG framework, with that draw's randomness laid out
+as `EncapsDerand` takes it: 32 bytes for ML-KEM, then the group seed. The
+public-key check adds nothing the exchange would accept. -/
+theorem encap_eq_Encaps (hC : H.G.CheckElementSound) (ek : Bytes)
+    (hl : ek.length = H.pq.publicKeySize + H.elementSize) (draw : Nat → Bytes)
+    (hfirst : (H.G.randomScalar (((draw 0).drop 32).take H.seedSize)).isSome) :
+    ((publicKey H ek).bind (encap H draw)).toOption
+      = CG.Encaps H ek (H.coins ((draw 0).take 32)) (((draw 0).drop 32).take H.seedSize) := by
+  unfold CG.Encaps
+  rw [split_prg _ _ ek hl]
+  obtain ⟨⟨eph, ct⟩, hs⟩ := Option.isSome_iff_exists.mp hfirst
+  have hstep : encap H draw = fun pub => (step H (draw 0) pub).getD exhausted := by
+    funext pub
+    rw [encap_eq_first, List.range_succ_eq_map, List.findSome?_cons]
+    simp [step, hs]
+  rw [hstep]
+  unfold publicKey MlkemKem.publicKey
+  cases hk : H.M.ekOfOctets (ek.take H.pq.publicKeySize) with
+  | error r => simp [hk, bind, Except.bind, Option.bind, Except.toOption]
+  | ok ekPQ =>
+    cases hg : H.G.sharedSecret eph ((ek.drop H.pq.publicKeySize).take H.elementSize) with
+    | error r =>
+      cases hc : H.G.checkElement ((ek.drop H.pq.publicKeySize).take H.elementSize) <;>
+      simp [hk, hs, hg, hc, step, bind, Except.bind, Option.bind, Except.toOption, pure,
+        Except.pure]
+    | ok gs =>
+      have hc := hC eph _ gs hg
+      simp [hk, hs, hg, hc, step, bind, Except.bind, Option.bind, Except.toOption, pure,
+        Except.pure, MlkemKem.encap, combine, CG.C2PRICombiner]
+
+/-! ### Correctness and error contracts -/
+
+/-- **Correctness.** What `encap` produces for the public half of a key that
+`private_key` derived from a seed, `decap` with its secret half turns back into
+the same shared secret. -/
+theorem decap_encap (hS : SizesAgree H) (hMC : H.M.Correct) (hCt : H.M.CiphertextRoundTrip)
+    (hCL : CiphertextLength H) (hG : H.G.Commutes) (hE : H.G.ElementLength H.elementSize)
+    {seed bytes : Bytes} {sec : Secret H} {pub : Public H}
+    (hk : privateKey H seed = .ok (sec, pub, bytes)) (draw : Nat → Bytes) {ss enc : Bytes}
+    (h : encap H draw pub = .ok (ss, enc)) :
+    decap H sec enc = .ok ss := by
+  obtain ⟨i, _, hi⟩ := encap_ok_step H h
+  unfold privateKey at hk
+  dsimp only at hk
+  split at hk
+  · cases hk
+  · rename_i scalar own hs
+    split at hk
+    · cases hk
+    · rename_i dk ekPQ pqBytes hpk
+      simp only [Except.ok.injEq, Prod.mk.injEq] at hk
+      obtain ⟨rfl, rfl, rfl⟩ := hk
+      simp only [MlkemKem.privateKey] at hpk
+      split at hpk
+      · cases hpk
+      · rename_i dk' hdk
+        simp only [Except.ok.injEq, Prod.mk.injEq] at hpk
+        obtain ⟨rfl, rfl, rfl⟩ := hpk
+        unfold step at hi
+        split at hi
+        · cases hi
+        · rename_i eph ct hse
+          dsimp only at hi
+          split at hi
+          · simp at hi
+          · rename_i gs hgs
+            simp only [MlkemKem.encap, Option.some.injEq, Except.ok.injEq, Prod.mk.injEq] at hi
+            obtain ⟨rfl, rfl⟩ := hi
+            have hct : ct.length = H.elementSize := hE _ _ _ hse
+            have hpqc := hCL (H.M.encaps (H.M.ekOfDk dk') (H.coins ((draw i).take 32))).1
+            unfold decap
+            rw [ite_eq_right (by rw [hS, List.length_append, hct, hpqc]; exact fun h => h rfl)]
+            dsimp only
+            rw [List.drop_append_of_le_length (by omega), List.drop_eq_nil_of_le (by omega),
+              List.nil_append, List.take_of_length_le (by omega)]
+            rw [hG _ _ scalar eph own ct hs hse, hgs]
+            simp only
+            rw [List.take_append_of_le_length (by omega), List.take_of_length_le (by omega)]
+            simp only [MlkemKem.decap, hCt _, hMC dk', combine]
+
+/-- `decap` fails only with `Invalid_encapsulation`: a wrong length, an element
+the exchange refuses, or an ML-KEM ciphertext the library refuses. -/
+theorem decap_error (sec : Secret H) (enc : Bytes) (e : Err) (h : decap H sec enc = .error e) :
+    ∃ r, e = .invalidEncapsulation r := by
+  unfold decap at h
+  split at h
+  · cases h; exact ⟨_, rfl⟩
+  · dsimp only at h
+    split at h
+    · cases h; exact ⟨_, rfl⟩
+    · split at h
+      · rename_i e' hd
+        cases h
+        unfold MlkemKem.decap at hd
+        split at hd <;> cases hd
+        exact ⟨_, rfl⟩
+      · cases h
+
+/-- Implicit rejection carries over: an encapsulation of the right length
+whose element the exchange accepts and whose ML-KEM part the library parses
+always decapsulates, whatever the ML-KEM part holds. -/
+theorem decap_ok (sec : Secret H) (enc : Bytes) (hl : enc.length = H.kem.encapsulatedKeySize)
+    (gs : Bytes)
+    (hg : H.G.sharedSecret sec.scalar ((enc.drop H.pq.encapsulatedKeySize).take H.elementSize)
+      = .ok gs)
+    (c : H.M.CT) (hc : H.M.ctOfOctets (enc.take H.pq.encapsulatedKeySize) = .ok c) :
+    ∃ ss, decap H sec enc = .ok ss := by
+  unfold decap
+  rw [ite_eq_right (fun h => h hl)]
+  simp [hg, MlkemKem.decap, hc]
+
+end HybridKem
+
+/-! ## 6. The hybrids through the dispatching mirrors -/
+
+/-- The private key `Private_key.of_bytes` returns for a hybrid seed, from what
+`Hybrid_kem.private_key` returns for it (lines 516-521, 568-585). -/
+def hybridPrivateKey (kem : KemId) (seed : Bytes) (sec : HybridKem.Secret (P.H kem))
+    (pub : HybridKem.Public (P.H kem)) (bytes : Bytes) : PrivateKey P :=
+  { kem, bytes := seed, secret := .hybrid sec,
+    publicKey := { kem, bytes, material := .hybrid pub } }
+
+/-- The hybrid round trip through the dispatching `encap` and `decap`. -/
+theorem decap_encap_hybrid (kem : KemId)
+    (hS : HybridKem.SizesAgree (P.H kem)) (hMC : (P.H kem).M.Correct)
+    (hCt : (P.H kem).M.CiphertextRoundTrip) (hCL : HybridKem.CiphertextLength (P.H kem))
+    (hG : (P.H kem).G.Commutes) (hE : (P.H kem).G.ElementLength (P.H kem).elementSize)
+    (generate : KemId → Except Err (PrivateKey P)) (coins : (k : KemId) → (P.M k).Coins)
+    (draw : KemId → Nat → Bytes) {seed bytes : Bytes} {sec : HybridKem.Secret (P.H kem)}
+    {pub : HybridKem.Public (P.H kem)}
+    (hk : HybridKem.privateKey (P.H kem) seed = .ok (sec, pub, bytes)) {ss enc : Bytes}
+    (h : encap P generate coins draw none (hybridPrivateKey P kem seed sec pub bytes).publicKey
+      = .ok (ss, enc)) :
+    decap P (hybridPrivateKey P kem seed sec pub bytes) none enc = .ok ss := by
+  simp only [encap, hybridPrivateKey, mlkemWithoutSender, bind, Except.bind] at h
+  simp only [decap, hybridPrivateKey, mlkemWithoutSender, bind, Except.bind]
+  exact HybridKem.decap_encap (P.H kem) hS hMC hCt hCL hG hE hk (draw kem) h
+
+/-- A hybrid `encap` never draws an ephemeral key pair. -/
+theorem encap_hybrid_ignores_generate (generate₁ generate₂ : KemId → Except Err (PrivateKey P))
+    (coins : (k : KemId) → (P.M k).Coins) (draw : KemId → Nat → Bytes)
+    (sender : Option (PrivateKey P)) (kem : KemId) (bytes : Bytes)
+    (pub : HybridKem.Public (P.H kem)) :
+    encap P generate₁ coins draw sender { kem, bytes, material := .hybrid pub }
+      = encap P generate₂ coins draw sender { kem, bytes, material := .hybrid pub } := rfl
+
+/-- A sender key is never silently dropped by a hybrid `encap` ... -/
+theorem encap_hybrid_sender (generate : KemId → Except Err (PrivateKey P))
+    (coins : (k : KemId) → (P.M k).Coins) (draw : KemId → Nat → Bytes) (s : PrivateKey P)
+    (recipient : PublicKey P) (pub : HybridKem.Public (P.H recipient.kem))
+    (h : recipient.material = .hybrid pub) :
+    encap P generate coins draw (some s) recipient = .error .unsupportedMode := by
+  unfold encap; rw [h]; rfl
+
+/-- ... nor by a hybrid `decap`. -/
+theorem decap_hybrid_sender (s : PublicKey P) (recipient : PrivateKey P)
+    (sec : HybridKem.Secret (P.H recipient.kem)) (h : recipient.secret = .hybrid sec)
+    (enc : Bytes) :
+    decap P recipient (some s) enc = .error .unsupportedMode := by
+  unfold decap; rw [h]; rfl
+
+/-- Without a sender key, a hybrid `decap` fails only with
+`Invalid_encapsulation`, never with one of the two errors `normalized_open`
+passes through. -/
+theorem decap_hybrid_not_caller_error (recipient : PrivateKey P)
+    (sec : HybridKem.Secret (P.H recipient.kem)) (h : recipient.secret = .hybrid sec)
+    (enc : Bytes) (e : Err) (he : decap P recipient none enc = .error e) :
+    (∃ r, e = .invalidEncapsulation r) ∧ e ≠ .keyMismatch ∧ e ≠ .unsupportedMode := by
+  unfold decap at he
+  rw [h] at he
+  simp only [mlkemWithoutSender, bind, Except.bind] at he
+  obtain ⟨r, rfl⟩ := HybridKem.decap_error (P.H recipient.kem) sec enc e he
+  exact ⟨⟨r, rfl⟩, nofun, nofun⟩
+
+/-- `dh` with a hybrid secret is `Invalid_private_key`: `hpke.for_testing`
+cannot choose an ephemeral key for a hybrid. -/
+theorem dh_hybrid (sk : PrivateKey P) (pk : PublicKey P) (h : sk.kem = pk.kem)
+    (sec : HybridKem.Secret (P.H sk.kem)) (hs : sk.secret = .hybrid sec) :
+    dh P sk pk
+      = .error (.invalidPrivateKey "hybrid KEM keys cannot perform a Diffie-Hellman exchange") := by
+  simp [dh, h, hs]
 
 end Kem
 end Hpke

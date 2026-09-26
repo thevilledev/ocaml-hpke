@@ -23,7 +23,11 @@ Proved:
   for the others, and fails with `Invalid_private_key` for a NIST scalar out of
   range;
 * `dh` rejects keys of different KEMs with `Key_mismatch` before any exchange,
-  and an ML-KEM secret with `Invalid_private_key`.
+  and an ML-KEM or hybrid secret with `Invalid_private_key`;
+* a hybrid public key is accepted only if its ML-KEM half passes the modulus
+  check and its element is accepted as a public key of its group: for P-256 and
+  P-384 an uncompressed point on the curve, for X25519 any value;
+* a hybrid private key is its seed, whatever `derive` makes of it.
 -/
 
 import HpkeSpec.Bytes
@@ -62,6 +66,21 @@ def parseNist (kem : KemId) (b : Bytes) : Except Err Unit :=
   else if deps.nistPoint kem b then .ok ()
   else .error (.invalidPublicKey "curve library")
 
+/-- `Group.check_element` of the nominal groups (`Nist_group`,
+`X25519_group`): `nist_public_key` for P-256 and P-384, nothing for X25519. -/
+def checkElement (group : KemId) (e : Bytes) : Except Err Unit :=
+  match group with
+  | .p256 | .p384 | .p521 => parseNist deps group e
+  | _ => .ok ()
+
+/-- `Hybrid_kem.public_key`: the ML-KEM half (`String.sub bytes 0 Npk`) through
+`Mlkem_kem.public_key`, then the element (`String.sub bytes Npk Nelem`)
+through `Group.check_element`. -/
+def parseHybrid (pq group : KemId) (b : Bytes) : Except Err Unit :=
+  if deps.mlkemKey pq (b.take pq.publicKeySize) then
+    checkElement deps group ((b.drop pq.publicKeySize).take group.publicKeySize)
+  else .error (.invalidPublicKey "modulus")
+
 /-- Mirror of `parse_public_bytes`: length first, then the per-KEM check. -/
 def parsePublic (kem : KemId) (b : Bytes) : Except Err Unit :=
   if b.length ≠ kem.publicKeySize then .error (.invalidPublicKey "wrong encoded length")
@@ -70,6 +89,9 @@ def parsePublic (kem : KemId) (b : Bytes) : Except Err Unit :=
     | .p256 | .p384 | .p521 => parseNist deps kem b
     | .mlkem512 | .mlkem768 | .mlkem1024 =>
       if deps.mlkemKey kem b then .ok () else .error (.invalidPublicKey "modulus")
+    | .mlkem768P256 => parseHybrid deps .mlkem768 .p256 b
+    | .mlkem768X25519 => parseHybrid deps .mlkem768 .x25519 b
+    | .mlkem1024P384 => parseHybrid deps .mlkem1024 .p384 b
 
 /-- Mirror of `Public_key.of_bytes`. -/
 def publicOfBytes (kem : KemId) (b : Bytes) : Except Err PublicKey := do
@@ -78,7 +100,8 @@ def publicOfBytes (kem : KemId) (b : Bytes) : Except Err PublicKey := do
 
 /-- Mirror of `Private_key.of_bytes`, with `secret_and_public` folded in: the
 secret's public key is parsed as any other (`Public_key.of_bytes`) for a DHKEM,
-and taken as is from ML-KEM key generation. -/
+and taken as is from ML-KEM or hybrid key generation. For a hybrid, `derive`
+fails with `Invalid_private_key` when the seed yields no scalar. -/
 def privateOfBytes (kem : KemId) (b : Bytes) : Except Err PrivateKey := do
   if b.length ≠ kem.privateKeySize then
     throw (.invalidPrivateKey "wrong encoded length")
@@ -87,18 +110,25 @@ def privateOfBytes (kem : KemId) (b : Bytes) : Except Err PrivateKey := do
     | .p256 | .p384 | .p521 =>
       if deps.scalarOk kem b then pure b
       else throw (.invalidPrivateKey "scalar is outside the valid range")
-    | .mlkem512 | .mlkem768 | .mlkem1024 => pure b
+    | .mlkem512 | .mlkem768 | .mlkem1024 | .mlkem768P256 | .mlkem768X25519
+    | .mlkem1024P384 => pure b
   let pub ← deps.derive kem b
   let publicKey ← match kem with
-    | .mlkem512 | .mlkem768 | .mlkem1024 => pure { kem, bytes := pub }
+    | .mlkem512 | .mlkem768 | .mlkem1024 | .mlkem768P256 | .mlkem768X25519
+    | .mlkem1024P384 => pure { kem, bytes := pub }
     | _ => publicOfBytes deps kem pub
   return { kem, bytes := b, publicKey }
+
+/-- The reason `dh` gives for a secret that is not a Diffie-Hellman one. -/
+def notDhReason (kem : KemId) : String :=
+  if kem.isHybrid then "hybrid KEM keys cannot perform a Diffie-Hellman exchange"
+  else "ML-KEM keys cannot perform a Diffie-Hellman exchange"
 
 /-- Mirror of the checks of `dh` that precede the exchange. -/
 def dhPrecheck (sk : PrivateKey) (pk : PublicKey) : Except Err Unit :=
   if sk.kem ≠ pk.kem then .error .keyMismatch
   else if sk.kem.isDh then .ok ()
-  else .error (.invalidPrivateKey "ML-KEM keys cannot perform a Diffie-Hellman exchange")
+  else .error (.invalidPrivateKey (notDhReason sk.kem))
 
 /-! ## Public keys -/
 
@@ -218,10 +248,43 @@ theorem dh_key_mismatch (sk : PrivateKey) (pk : PublicKey) (h : sk.kem ≠ pk.ke
 theorem dh_mlkem (sk : PrivateKey) (pk : PublicKey) (h : sk.kem = pk.kem)
     (hm : sk.kem.isDh = false) :
     ∃ r, dhPrecheck sk pk = .error (.invalidPrivateKey r) := by
-  refine ⟨"ML-KEM keys cannot perform a Diffie-Hellman exchange", ?_⟩
+  refine ⟨notDhReason sk.kem, ?_⟩
   unfold dhPrecheck
   rw [h] at hm
   simp [h, hm]
+
+/-! ## Hybrid keys -/
+
+theorem publicOfBytes_ok_iff (kem : KemId) (b : Bytes) :
+    (∃ k, publicOfBytes deps kem b = .ok k) ↔ parsePublic deps kem b = .ok () := by
+  unfold publicOfBytes
+  cases parsePublic deps kem b <;> simp [bind, Except.bind, pure, Except.pure]
+
+/-- A hybrid public key is accepted exactly when it has the hybrid's length,
+its ML-KEM half passes the modulus check, and its element is accepted by its
+group, which for P-256 and P-384 means the uncompressed form of a point the
+curve library accepts. -/
+theorem publicOfBytes_hybrid {kem pq group : KemId}
+    (hp : KemId.hybridParts kem = some (pq, group)) (b : Bytes) :
+    (∃ k, publicOfBytes deps kem b = .ok k) ↔
+      b.length = kem.publicKeySize ∧ deps.mlkemKey pq (b.take pq.publicKeySize) = true ∧
+      (group.isNist' = true →
+        ((b.drop pq.publicKeySize).take group.publicKeySize).head? = some 4 ∧
+        deps.nistPoint group ((b.drop pq.publicKeySize).take group.publicKeySize) = true) := by
+  rw [publicOfBytes_ok_iff]
+  by_cases hl : b.length = kem.publicKeySize
+  · cases kem <;> simp [KemId.hybridParts] at hp <;> obtain ⟨rfl, rfl⟩ := hp <;>
+    simp only [parsePublic, hl, ne_eq, not_true_eq_false, ite_false, parseHybrid,
+      checkElement, parseNist, KemId.isNist'] <;>
+    (repeat' split) <;> simp_all
+  · simp [parsePublic, hl]
+
+/-- A hybrid private key stores its seed as given. -/
+theorem privateOfBytes_hybrid_bytes {kem : KemId} (hk : kem.isHybrid = true) {b : Bytes}
+    {k : PrivateKey} (h : privateOfBytes deps kem b = .ok k) : k.bytes = b := by
+  have := (privateOfBytes_bytes deps h).2.2
+  rw [this]
+  cases kem <;> simp_all [KemId.isHybrid]
 
 theorem dh_ok_iff (sk : PrivateKey) (pk : PublicKey) :
     dhPrecheck sk pk = .ok () ↔ sk.kem = pk.kem ∧ sk.kem.isDh = true := by

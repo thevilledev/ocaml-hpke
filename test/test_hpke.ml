@@ -482,9 +482,11 @@ let go_p384_differential_fixture () =
     (ok (Rfc9180.Receiver.export context ~context:"export-context" ~length:48))
 
 let mlkem_kems = [ Kem.Mlkem512; Kem.Mlkem768; Kem.Mlkem1024 ]
+let hybrid_kems = [ Kem.Mlkem768_p256; Kem.Mlkem768_x25519; Kem.Mlkem1024_p384 ]
 
 let all_kems =
-  [ Kem.P256; Kem.P384; Kem.P521; Kem.X25519; Kem.X448 ] @ mlkem_kems
+  [ Kem.P256; Kem.P384; Kem.P521; Kem.X25519; Kem.X448 ]
+  @ mlkem_kems @ hybrid_kems
 
 (* The KEMs with Auth and AuthPSK modes. [algorithm_sizes] checks the predicate
    itself against literals. *)
@@ -864,6 +866,23 @@ let adversarial_mismatches () =
         Kdf.Hkdf_sha512,
         Aead.Aes_256_gcm,
         Aead.Aes_128_gcm );
+      (* So does a hybrid's ML-KEM half, and its group half then yields another
+         secret as well. *)
+      ( "MLKEM768-P256/AES-128",
+        Kem.Mlkem768_p256,
+        Kdf.Hkdf_sha256,
+        Aead.Aes_128_gcm,
+        Aead.Aes_256_gcm );
+      ( "MLKEM768-X25519/ChaCha",
+        Kem.Mlkem768_x25519,
+        Kdf.Hkdf_sha256,
+        Aead.Chacha20_poly1305,
+        Aead.Aes_128_gcm );
+      ( "MLKEM1024-P384/AES-256",
+        Kem.Mlkem1024_p384,
+        Kdf.Hkdf_sha384,
+        Aead.Aes_256_gcm,
+        Aead.Chacha20_poly1305 );
     ]
   in
   List.iter
@@ -1075,8 +1094,8 @@ let all_kdfs = [ Kdf.Hkdf_sha256; Kdf.Hkdf_sha384; Kdf.Hkdf_sha512 ]
 let all_aeads = [ Aead.Aes_128_gcm; Aead.Aes_256_gcm; Aead.Chacha20_poly1305 ]
 
 let algorithm_sizes () =
-  (* RFC 9180, Sections 7.1 to 7.3, and for ML-KEM draft-ietf-hpke-pq-05,
-     Section 8.1. *)
+  (* RFC 9180, Sections 7.1 to 7.3, and for ML-KEM and the hybrids
+     draft-ietf-hpke-pq-05, Sections 8.1 and 8.2. *)
   let sizes =
     [
       (Kem.P256, 0x0010, 32, 65, 65, 32, true);
@@ -1087,6 +1106,9 @@ let algorithm_sizes () =
       (Kem.Mlkem512, 0x0040, 32, 768, 800, 64, false);
       (Kem.Mlkem768, 0x0041, 32, 1088, 1184, 64, false);
       (Kem.Mlkem1024, 0x0042, 32, 1568, 1568, 64, false);
+      (Kem.Mlkem768_p256, 0x0050, 32, 1153, 1249, 32, false);
+      (Kem.Mlkem1024_p384, 0x0051, 32, 1665, 1665, 32, false);
+      (Kem.Mlkem768_x25519, 0x647a, 32, 1120, 1216, 32, false);
     ]
   in
   Alcotest.(check int)
@@ -1522,7 +1544,8 @@ let expect_unsupported_mode label = function
   | Error error -> Alcotest.failf "%s returned %s" label (error_to_string error)
   | Ok _ -> Alcotest.failf "%s unexpectedly succeeded" label
 
-(* draft-ietf-hpke-pq-05, Section 7.2: ML-KEM has no AuthEncap or AuthDecap. *)
+(* draft-ietf-hpke-pq-05, Section 7.2: ML-KEM and the hybrids have no AuthEncap
+   or AuthDecap. *)
 let mlkem_has_no_auth_modes () =
   let generator = rng () in
   let psk = ok (Psk.create ~secret:(String.make 32 '\x11') ~id:"psk") in
@@ -1627,7 +1650,575 @@ let mlkem_has_no_auth_modes () =
         (name ^ " X25519 ephemeral key")
         (Hpke_for_testing.setup_base_sender suite ~ephemeral:x25519_sender
            ~recipient:public ~info))
-    mlkem_kems
+    (mlkem_kems @ hybrid_kems)
+
+(* The ML-KEM parameter set and the group of each hybrid KEM, the latter named
+   by the Diffie-Hellman KEM over it. *)
+let hybrid_parts = function
+  | Kem.Mlkem768_p256 -> (Kem.Mlkem768, Kem.P256)
+  | Kem.Mlkem768_x25519 -> (Kem.Mlkem768, Kem.X25519)
+  | Kem.Mlkem1024_p384 -> (Kem.Mlkem1024, Kem.P384)
+  | kem -> Alcotest.failf "%s is not a hybrid KEM" (kem_name kem)
+
+let expect_invalid_encapsulation label = function
+  | Error (Error.Invalid_encapsulation _) -> ()
+  | Error error -> Alcotest.failf "%s returned %s" label (error_to_string error)
+  | Ok _ -> Alcotest.failf "%s was not reported as malformed" label
+
+let with_byte_flipped bytes index =
+  let bytes = Bytes.of_string bytes in
+  Bytes.set_uint8 bytes index (Bytes.get_uint8 bytes index lxor 1);
+  Bytes.unsafe_to_string bytes
+
+(* draft-ietf-hpke-pq-05, Section 4: a hybrid private key is a 32-byte seed,
+   which GenerateKeyPair draws and DeriveKeyPair derives with SHAKE256, and a
+   public key is the ML-KEM key followed by the group element. *)
+let hybrid_keys () =
+  let generator = rng () in
+  List.iter
+    (fun (kem, empty_ikm_seed, long_ikm_seed) ->
+      let name = kem_name kem in
+      let pq, group = hybrid_parts kem in
+      (* The generator holds exactly one seed, so a library that drew more would
+         raise and one that drew less or hashed it would serialize something
+         else. *)
+      let seed = String.init 32 (fun index -> Char.chr (index + 1)) in
+      let generated, generated_public =
+        ok (generate_key_pair ~rng:(fixed_rng seed) kem)
+      in
+      Alcotest.(check string)
+        (name ^ " generated seed") seed
+        (Private_key.to_bytes generated);
+      let public_bytes = Public_key.to_bytes generated_public in
+      Alcotest.(check int)
+        (name ^ " public key size")
+        (Kem.public_key_size kem)
+        (String.length public_bytes);
+      Alcotest.(check string)
+        (name ^ " a seed names one key pair")
+        public_bytes
+        (Public_key.to_bytes
+           (Private_key.public_key (ok (Private_key.of_bytes ~kem seed))));
+      Alcotest.(check string)
+        (name ^ " public key round trip")
+        public_bytes
+        (Public_key.to_bytes (ok (Public_key.of_bytes ~kem public_bytes)));
+      (* SHAKE256 over a framed input, as for ML-KEM, but 32 bytes of it. These
+         seeds were computed with OpenSSL's SHAKE256. *)
+      check_hex
+        (name ^ " seed of an empty ikm")
+        empty_ikm_seed
+        (Private_key.to_bytes (fst (ok (derive_key_pair kem ~ikm:""))));
+      check_hex
+        (name ^ " seed of a 200-byte ikm")
+        long_ikm_seed
+        (Private_key.to_bytes
+           (fst (ok (derive_key_pair kem ~ikm:(String.make 200 '\x42')))));
+      expect_invalid_private_key (name ^ " short seed")
+        (Private_key.of_bytes ~kem (String.make 31 '\001'));
+      expect_invalid_private_key (name ^ " long seed")
+        (Private_key.of_bytes ~kem (String.make 33 '\001'));
+      expect_invalid_private_key (name ^ " ML-KEM seed")
+        (Private_key.of_bytes ~kem (String.make 64 '\001'));
+      let public_size = Kem.public_key_size kem in
+      let pq_size = Kem.public_key_size pq in
+      let element = String.sub public_bytes pq_size (public_size - pq_size) in
+      Alcotest.(check int)
+        (name ^ " element size")
+        (Kem.public_key_size group)
+        (String.length element);
+      expect_invalid_public_key
+        (name ^ " short public key")
+        (Public_key.of_bytes ~kem (String.sub public_bytes 0 (public_size - 1)));
+      expect_invalid_public_key
+        (name ^ " long public key")
+        (Public_key.of_bytes ~kem (public_bytes ^ "\000"));
+      expect_invalid_public_key
+        (name ^ " ML-KEM half alone")
+        (Public_key.of_bytes ~kem (String.sub public_bytes 0 pq_size));
+      (* FIPS 203, Section 7.2, holds for the ML-KEM half. *)
+      expect_invalid_public_key
+        (name ^ " unreduced coefficients")
+        (Public_key.of_bytes ~kem (String.make pq_size '\xff' ^ element));
+      let with_element element =
+        Public_key.of_bytes ~kem (String.sub public_bytes 0 pq_size ^ element)
+      in
+      match group with
+      | Kem.X25519 ->
+          (* Every value parses, and a low-order one fails when it is used. *)
+          List.iter
+            (fun (label, element) ->
+              let public = ok (with_element element) in
+              expect_invalid_public_key
+                (name ^ " " ^ label ^ " as recipient element")
+                (Rfc9180.seal_base ~rng:generator (mlkem_suite kem)
+                   ~recipient:public ~info ~aad:"" ~plaintext))
+            [
+              ("zero", String.make 32 '\000');
+              ("one", "\001" ^ String.make 31 '\000');
+            ]
+      | _ ->
+          expect_invalid_public_key
+            (name ^ " compressed element")
+            (with_element
+               ("\002" ^ String.sub element 1 (String.length element - 1)));
+          expect_invalid_public_key
+            (name ^ " element off the curve")
+            (with_element
+               ("\004" ^ String.make (String.length element - 1) '\000')))
+    [
+      ( Kem.Mlkem768_p256,
+        "1dcb72581fff704b0a515546a069c4f472029270e1ed2d8d20879b3a98799d4f",
+        "86f8444213b7ee8b310161c918437fecb6b7154cd17bffe6db6195e3b04dec90" );
+      ( Kem.Mlkem768_x25519,
+        "a1313c048b30e1aba5ecb9ec783c7fa8e9c6a48f568a685fbe48ba5e2a5ca66c",
+        "ba630bc9ac9a88e2ae33e5ba4bbd378b9159be0e16757ea0ffe42e156443d1cc" );
+      ( Kem.Mlkem1024_p384,
+        "c13ff089f94b257e33c1ff61e3eff983b9837b7cb76b8a0980b3509fee0806c0",
+        "697fe7767cd7ead3cf61db4a58f303f4e6ff534dca1a1cc79156ca9768b2cd46" );
+    ]
+
+(* A hybrid encapsulated key is an ML-KEM ciphertext, which decapsulates
+   whatever it holds, followed by an ephemeral element, which is validated. *)
+let hybrid_encapsulations () =
+  let generator = rng () in
+  List.iter
+    (fun kem ->
+      let name = kem_name kem in
+      let pq, group = hybrid_parts kem in
+      let suite = mlkem_suite kem in
+      let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+      let sender =
+        ok
+          (Rfc9180.setup_base_sender ~rng:generator suite ~recipient:public
+             ~info)
+      in
+      let encapsulated_key = sender.encapsulated_key in
+      Alcotest.(check int)
+        (name ^ " encapsulation size")
+        (Kem.encapsulated_key_size kem)
+        (String.length encapsulated_key);
+      let sealed = ok (Rfc9180.Sender.seal sender.context ~aad:"" ~plaintext) in
+      let receive encapsulated_key =
+        Rfc9180.setup_base_receiver suite ~recipient ~encapsulated_key ~info
+      in
+      let open_single_shot encapsulated_key =
+        Rfc9180.open_base suite ~recipient ~info ~aad:""
+          ~ciphertext:{ Rfc9180.encapsulated_key; ciphertext = sealed }
+      in
+      Alcotest.(check string)
+        (name ^ " untampered encapsulation")
+        plaintext
+        (ok
+           (Rfc9180.Receiver.open_
+              (ok (receive encapsulated_key))
+              ~aad:"" ~ciphertext:sealed));
+      (* Implicit rejection: another secret, and no error until the open. *)
+      let tampered_pq = with_byte_flipped encapsulated_key 0 in
+      expect_open_error
+        (name ^ " tampered ML-KEM ciphertext")
+        (Rfc9180.Receiver.open_
+           (ok (receive tampered_pq))
+           ~aad:"" ~ciphertext:sealed);
+      expect_open_error
+        (name ^ " tampered ML-KEM ciphertext, single-shot")
+        (open_single_shot tampered_pq);
+      let pq_size = Kem.encapsulated_key_size pq in
+      let element_size = Kem.public_key_size group in
+      let with_element element =
+        String.sub encapsulated_key 0 pq_size ^ element
+      in
+      let malformed =
+        [
+          ("empty encapsulation", "");
+          ( "short encapsulation",
+            String.sub encapsulated_key 0 (String.length encapsulated_key - 1)
+          );
+          ("long encapsulation", encapsulated_key ^ "\000");
+          ("ML-KEM ciphertext alone", String.sub encapsulated_key 0 pq_size);
+        ]
+        (* MLKEM1024-P384's public key is as long as its encapsulation. *)
+        @ (if Kem.public_key_size kem = Kem.encapsulated_key_size kem then []
+           else [ ("public key as encapsulation", Public_key.to_bytes public) ])
+        @
+        match group with
+        | Kem.X25519 ->
+            [
+              ("zero element", with_element (String.make 32 '\000'));
+              ("element one", with_element ("\001" ^ String.make 31 '\000'));
+            ]
+        | _ ->
+            [
+              ( "compressed element",
+                with_element
+                  ("\002"
+                  ^ String.sub encapsulated_key (pq_size + 1) (element_size - 1)
+                  ) );
+              ( "element off the curve",
+                with_element ("\004" ^ String.make (element_size - 1) '\000') );
+              ( "tampered element",
+                with_byte_flipped encapsulated_key
+                  (String.length encapsulated_key - 1) );
+            ]
+      in
+      List.iter
+        (fun (label, encapsulated_key) ->
+          expect_invalid_encapsulation
+            (name ^ " " ^ label)
+            (receive encapsulated_key);
+          expect_open_error
+            (name ^ " " ^ label ^ ", single-shot")
+            (open_single_shot encapsulated_key))
+        malformed;
+      (* Any other X25519 value of full order is an element, and yields another
+         secret. *)
+      if group = Kem.X25519 then
+        expect_open_error
+          (name ^ " tampered element")
+          (Rfc9180.Receiver.open_
+             (ok
+                (receive
+                   (with_byte_flipped encapsulated_key
+                      (String.length encapsulated_key - 1))))
+             ~aad:"" ~ciphertext:sealed))
+    hybrid_kems
+
+(* The ephemeral scalar of a P-256 or P-384 hybrid is drawn from the
+   encapsulation's randomness by rejection sampling
+   (draft-irtf-cfrg-concrete-hybrid-kems, Section 3.1.1). A seed without a valid
+   candidate, which occurs with negligible probability, is drawn again. *)
+let hybrid_rejection_sampling () =
+  List.iter
+    (fun kem ->
+      let name = kem_name kem in
+      let _, group = hybrid_parts kem in
+      let suite = mlkem_suite kem in
+      let recipient, public =
+        ok (derive_key_pair kem ~ikm:(String.make 32 '\x07'))
+      in
+      let scalar_size = Kem.private_key_size group in
+      let seed_size = if group = Kem.P256 then 128 else 48 in
+      let candidates = seed_size / scalar_size in
+      let zero = String.make scalar_size '\000' in
+      let too_large = String.make scalar_size '\xff' in
+      let valid = String.make scalar_size '\x01' in
+      let pq_randomness = String.make 32 '\x33' in
+      let encapsulate randomness =
+        Rfc9180.setup_base_sender ~rng:(fixed_rng randomness) suite
+          ~recipient:public ~info
+      in
+      let element encapsulated_key =
+        String.sub encapsulated_key
+          (String.length encapsulated_key - Kem.public_key_size group)
+          (Kem.public_key_size group)
+      in
+      let public_of scalar =
+        Public_key.to_bytes
+          (Private_key.public_key (ok (Private_key.of_bytes ~kem:group scalar)))
+      in
+      (* The last candidate is the first valid one. *)
+      let seed =
+        String.concat ""
+          (List.init candidates (fun index ->
+               if index = candidates - 1 then valid
+               else if index mod 2 = 0 then zero
+               else too_large))
+      in
+      let sender = ok (encapsulate (pq_randomness ^ seed)) in
+      Alcotest.(check string)
+        (name ^ " first valid candidate")
+        (public_of valid)
+        (element sender.encapsulated_key);
+      let receiver =
+        ok
+          (Rfc9180.setup_base_receiver suite ~recipient
+             ~encapsulated_key:sender.encapsulated_key ~info)
+      in
+      Alcotest.(check string)
+        (name ^ " round trip") plaintext
+        (ok
+           (Rfc9180.Receiver.open_ receiver ~aad:""
+              ~ciphertext:
+                (ok (Rfc9180.Sender.seal sender.context ~aad:"" ~plaintext))));
+      (* A seed without a valid candidate is drawn again, with the ML-KEM
+         randomness. *)
+      let rejected = pq_randomness ^ String.make seed_size '\xff' in
+      let drawn_again =
+        String.make 32 '\x44' ^ valid
+        ^ String.make (seed_size - scalar_size) '\000'
+      in
+      Alcotest.(check string)
+        (name ^ " seed drawn again")
+        (ok (encapsulate drawn_again)).encapsulated_key
+        (ok (encapsulate (rejected ^ drawn_again))).encapsulated_key;
+      match
+        encapsulate (String.concat "" (List.init 8 (fun _ -> rejected)))
+      with
+      | Error (Error.Internal_error _) -> ()
+      | Error error ->
+          Alcotest.failf "%s exhausted sampling returned %s" name
+            (error_to_string error)
+      | Ok _ -> Alcotest.failf "%s sampled a scalar from no candidate" name)
+    [ Kem.Mlkem768_p256; Kem.Mlkem1024_p384 ]
+
+(* Hpke.Draft_hpke_04 *)
+
+let draft_kdfs =
+  Draft_hpke_04.Kdf.
+    [ Hkdf_sha256; Hkdf_sha384; Hkdf_sha512; Shake128; Shake256 ]
+
+let draft_registry () =
+  List.iter
+    (fun (kdf, identifier, nh, two_stage) ->
+      let name = Format.asprintf "%a" Draft_hpke_04.Kdf.pp kdf in
+      Alcotest.(check int)
+        (name ^ " identifier") identifier
+        (Draft_hpke_04.Kdf.to_int kdf);
+      Alcotest.(check bool)
+        (name ^ " identifier round trip")
+        true
+        (Draft_hpke_04.Kdf.of_int identifier = Ok kdf);
+      Alcotest.(check int) (name ^ " Nh") nh (Draft_hpke_04.Kdf.hash_size kdf);
+      Alcotest.(check bool)
+        (name ^ " two-stage") true
+        (Draft_hpke_04.Kdf.two_stage kdf = two_stage);
+      (* A two-stage KDF has no Derive, and a one-stage one derives. *)
+      match (two_stage, Draft_hpke_04.Kdf.derive kdf "ikm" 5) with
+      | Some _, Error (Error.Unsupported_algorithm id) ->
+          Alcotest.(check int) (name ^ " Derive refused") identifier id
+      | None, Ok output ->
+          Alcotest.(check int)
+            (name ^ " Derive length") 5 (String.length output)
+      | _ -> Alcotest.failf "%s Derive" name)
+    [
+      (Draft_hpke_04.Kdf.Hkdf_sha256, 0x0001, 32, Some Kdf.Hkdf_sha256);
+      (Draft_hpke_04.Kdf.Hkdf_sha384, 0x0002, 48, Some Kdf.Hkdf_sha384);
+      (Draft_hpke_04.Kdf.Hkdf_sha512, 0x0003, 64, Some Kdf.Hkdf_sha512);
+      (Draft_hpke_04.Kdf.Shake128, 0x0010, 32, None);
+      (Draft_hpke_04.Kdf.Shake256, 0x0011, 64, None);
+    ];
+  Alcotest.(check int) "every draft KDF is listed" (List.length draft_kdfs) 5;
+  (* SHAKE of FIPS 202, from OpenSSL's hashlib: an empty input, cut to 8. *)
+  check_hex "SHAKE128 Derive" "7f9c2ba4e88f827d"
+    (ok (Draft_hpke_04.Kdf.derive Draft_hpke_04.Kdf.Shake128 "" 8));
+  check_hex "SHAKE256 Derive" "46b9dd2b0ba88d13"
+    (ok (Draft_hpke_04.Kdf.derive Draft_hpke_04.Kdf.Shake256 "" 8));
+  (match Draft_hpke_04.Kdf.derive Draft_hpke_04.Kdf.Shake256 "" (-1) with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "negative Derive length");
+  (* TurboSHAKE and unknown identifiers are refused. *)
+  List.iter
+    (fun identifier ->
+      match Draft_hpke_04.Kdf.of_int identifier with
+      | Error (Error.Unsupported_algorithm id) when id = identifier -> ()
+      | _ -> Alcotest.failf "KDF 0x%04x was accepted" identifier)
+    [ 0x0000; 0x0004; 0x0012; 0x0013; 0xffff ]
+
+(* Every KEM with every one-stage KDF and AEAD, in both modes. *)
+let draft_round_trips () =
+  let generator = rng () in
+  let psk = ok (Psk.create ~secret:(String.make 32 '\x5a') ~id:"draft-psk") in
+  List.iter
+    (fun kem ->
+      let recipient, public = ok (generate_key_pair ~rng:generator kem) in
+      List.iter
+        (fun kdf ->
+          List.iter
+            (fun aead ->
+              let suite = Draft_hpke_04.Suite.create ~kem ~kdf ~aead in
+              let sealed =
+                ok
+                  (Draft_hpke_04.seal_base ~rng:generator suite
+                     ~recipient:public ~info:"draft-info" ~aad:"draft-aad"
+                     ~plaintext:"\000draft\255")
+              in
+              Alcotest.(check string)
+                "draft Base round trip" "\000draft\255"
+                (ok
+                   (Draft_hpke_04.open_base suite ~recipient ~info:"draft-info"
+                      ~aad:"draft-aad" ~ciphertext:sealed));
+              let sealed =
+                ok
+                  (Draft_hpke_04.seal_psk ~rng:generator suite ~recipient:public
+                     ~psk ~info:"" ~aad:"" ~plaintext:"")
+              in
+              Alcotest.(check string)
+                "draft PSK round trip" ""
+                (ok
+                   (Draft_hpke_04.open_psk suite ~recipient ~psk ~info:""
+                      ~aad:"" ~ciphertext:sealed));
+              (* The modes are bound: a PSK message does not open in Base. *)
+              expect_open_error "draft PSK message opened in Base mode"
+                (Draft_hpke_04.open_base suite ~recipient ~info:"" ~aad:""
+                   ~ciphertext:sealed))
+            all_aeads;
+          let exporter = Draft_hpke_04.Suite.export_only ~kem ~kdf in
+          let setup =
+            ok
+              (Draft_hpke_04.setup_base_sender ~rng:generator exporter
+                 ~recipient:public ~info:"export")
+          in
+          let receiver =
+            ok
+              (Draft_hpke_04.setup_base_receiver exporter ~recipient
+                 ~encapsulated_key:setup.encapsulated_key ~info:"export")
+          in
+          Alcotest.(check string)
+            "draft exports agree"
+            (ok (Rfc9180.Sender.export setup.context ~context:"c" ~length:64))
+            (ok (Rfc9180.Receiver.export receiver ~context:"c" ~length:64)))
+        Draft_hpke_04.Kdf.[ Shake128; Shake256 ])
+    all_kems
+
+(* With an HKDF the draft is RFC 9180: from the same randomness, the same
+   encapsulation, ciphertext and export. With SHAKE it is something else. *)
+let draft_hkdf_is_rfc9180 () =
+  let recipient, public =
+    ok (derive_key_pair Kem.X25519 ~ikm:(String.make 32 '\x31'))
+  in
+  let seal_with setup =
+    let (setup : _ Rfc9180.sender_setup) = ok setup in
+    ( setup.Rfc9180.encapsulated_key,
+      ok (Rfc9180.Sender.seal setup.context ~aad:"a" ~plaintext:"p"),
+      ok (Rfc9180.Sender.export setup.context ~context:"c" ~length:32) )
+  in
+  let randomness = String.make 32 '\x77' in
+  List.iter
+    (fun (draft_kdf, kdf) ->
+      let rfc =
+        seal_with
+          (Rfc9180.setup_base_sender ~rng:(fixed_rng randomness)
+             (Suite.create ~kem:Kem.X25519 ~kdf ~aead:Aead.Aes_128_gcm)
+             ~recipient:public ~info:"i")
+      in
+      let draft =
+        seal_with
+          (Draft_hpke_04.setup_base_sender ~rng:(fixed_rng randomness)
+             (Draft_hpke_04.Suite.create ~kem:Kem.X25519 ~kdf:draft_kdf
+                ~aead:Aead.Aes_128_gcm)
+             ~recipient:public ~info:"i")
+      in
+      Alcotest.(check bool)
+        "HKDF draft suite is the RFC 9180 suite" true (rfc = draft))
+    Draft_hpke_04.Kdf.
+      [
+        (Hkdf_sha256, Kdf.Hkdf_sha256);
+        (Hkdf_sha384, Kdf.Hkdf_sha384);
+        (Hkdf_sha512, Kdf.Hkdf_sha512);
+      ];
+  let shake =
+    ok
+      (Draft_hpke_04.setup_base_sender ~rng:(fixed_rng randomness)
+         (Draft_hpke_04.Suite.create ~kem:Kem.X25519
+            ~kdf:Draft_hpke_04.Kdf.Shake128 ~aead:Aead.Aes_128_gcm)
+         ~recipient:public ~info:"i")
+  in
+  let rfc =
+    ok
+      (Rfc9180.setup_base_sender ~rng:(fixed_rng randomness) x25519_aes_suite
+         ~recipient:public ~info:"i")
+  in
+  Alcotest.(check string)
+    "the KEM does not depend on the KDF" rfc.encapsulated_key
+    shake.encapsulated_key;
+  Alcotest.(check bool)
+    "SHAKE128 derives other keys" false
+    (ok (Rfc9180.Sender.seal shake.context ~aad:"a" ~plaintext:"p")
+    = ok (Rfc9180.Sender.seal rfc.context ~aad:"a" ~plaintext:"p"));
+  ignore recipient
+
+(* draft-ietf-hpke-hpke-04, Section 7.2.1: a one-stage KDF frames info, the PSK
+   and its identifier in two bytes, and an export's length in two bytes. *)
+let draft_one_stage_limits () =
+  let generator = rng () in
+  let recipient, public = ok (generate_key_pair ~rng:generator Kem.X25519) in
+  let suite =
+    Draft_hpke_04.Suite.create ~kem:Kem.X25519 ~kdf:Draft_hpke_04.Kdf.Shake256
+      ~aead:Aead.Chacha20_poly1305
+  in
+  let longest = String.make 0xffff 'i' and too_long = String.make 0x10000 'i' in
+  let setup =
+    ok
+      (Draft_hpke_04.setup_base_sender ~rng:generator suite ~recipient:public
+         ~info:longest)
+  in
+  let receiver =
+    ok
+      (Draft_hpke_04.setup_base_receiver suite ~recipient
+         ~encapsulated_key:setup.encapsulated_key ~info:longest)
+  in
+  Alcotest.(check string)
+    "65535-byte info" "m"
+    (ok
+       (Rfc9180.Receiver.open_ receiver ~aad:""
+          ~ciphertext:
+            (ok (Rfc9180.Sender.seal setup.context ~aad:"" ~plaintext:"m"))));
+  (match
+     Draft_hpke_04.setup_base_sender ~rng:generator suite ~recipient:public
+       ~info:too_long
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte info was accepted");
+  (match
+     Draft_hpke_04.setup_base_receiver suite ~recipient
+       ~encapsulated_key:setup.encapsulated_key ~info:too_long
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte info was accepted by the receiver");
+  expect_open_error "a 65536-byte info, single-shot"
+    (Draft_hpke_04.open_base suite ~recipient ~info:too_long ~aad:""
+       ~ciphertext:
+         {
+           Draft_hpke_04.encapsulated_key = setup.encapsulated_key;
+           ciphertext = "";
+         });
+  let long_psk = ok (Psk.create ~secret:too_long ~id:"id") in
+  (match
+     Draft_hpke_04.setup_psk_sender ~rng:generator suite ~recipient:public
+       ~psk:long_psk ~info:""
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte PSK was accepted");
+  let long_id = ok (Psk.create ~secret:(String.make 32 'k') ~id:too_long) in
+  (match
+     Draft_hpke_04.setup_psk_sender ~rng:generator suite ~recipient:public
+       ~psk:long_id ~info:""
+   with
+  | Error (Error.Invalid_length _) -> ()
+  | _ -> Alcotest.fail "a 65536-byte PSK identifier was accepted");
+  let export length = Rfc9180.Sender.export setup.context ~context:"" ~length in
+  Alcotest.(check int)
+    "65535-byte export" 0xffff
+    (String.length (ok (export 0xffff)));
+  List.iter
+    (fun length ->
+      match export length with
+      | Error Error.Export_length_out_of_range -> ()
+      | _ -> Alcotest.failf "export of %d bytes" length)
+    [ -1; 0x10000 ];
+  (* An HKDF suite keeps RFC 9180's bound of 255 Nh and has no bound on info. *)
+  let hkdf =
+    Draft_hpke_04.Suite.create ~kem:Kem.X25519
+      ~kdf:Draft_hpke_04.Kdf.Hkdf_sha256 ~aead:Aead.Chacha20_poly1305
+  in
+  let setup =
+    ok
+      (Draft_hpke_04.setup_base_sender ~rng:generator hkdf ~recipient:public
+         ~info:too_long)
+  in
+  (match
+     Rfc9180.Sender.export setup.context ~context:"" ~length:((255 * 32) + 1)
+   with
+  | Error Error.Export_length_out_of_range -> ()
+  | _ -> Alcotest.fail "an HKDF export beyond 255 Nh");
+  (* A key of another KEM. *)
+  let p256, _ = ok (generate_key_pair ~rng:generator Kem.P256) in
+  expect_key_mismatch "draft recipient key of another KEM"
+    (Draft_hpke_04.setup_base_receiver suite ~recipient:p256
+       ~encapsulated_key:setup.encapsulated_key ~info:"");
+  expect_key_mismatch "draft recipient key of another KEM, single-shot"
+    (Draft_hpke_04.open_base suite ~recipient:p256 ~info:"" ~aad:""
+       ~ciphertext:{ Draft_hpke_04.encapsulated_key = ""; ciphertext = "" })
 
 let qcheck_round_trip =
   let generator = QCheck2.Gen.string_size (QCheck2.Gen.int_bound 1024) in
@@ -1716,6 +2307,50 @@ let qcheck_mlkem_peer_input_total =
           String.length input <> Kem.encapsulated_key_size kem
       | Error _ -> false)
 
+let qcheck_hybrid_peer_input_total =
+  let recipients =
+    lazy
+      (List.map
+         (fun kem ->
+           (kem, fst (ok (derive_key_pair kem ~ikm:(String.make 32 '\x42')))))
+         hybrid_kems)
+  in
+  let generator =
+    let open QCheck2.Gen in
+    let* kem =
+      map (List.nth hybrid_kems) (int_bound (List.length hybrid_kems - 1))
+    in
+    let* exact = bool in
+    let* input =
+      string_size
+        (if exact then return (Kem.encapsulated_key_size kem)
+         else int_bound 2048)
+    in
+    return (kem, input)
+  in
+  QCheck2.Test.make ~name:"hybrid peer input never raises" ~count:200 generator
+    (fun (kem, input) ->
+      let recipient = List.assoc kem (Lazy.force recipients) in
+      ignore (Public_key.of_bytes ~kem input);
+      (* Bytes of the right length decapsulate, to a secret nothing was sealed
+         under, unless their element is invalid; any others are a malformed
+         encapsulation. *)
+      match
+        Rfc9180.setup_base_receiver (mlkem_suite kem) ~recipient
+          ~encapsulated_key:input ~info:"fuzz"
+      with
+      | Ok receiver -> (
+          String.length input = Kem.encapsulated_key_size kem
+          &&
+          match
+            Rfc9180.Receiver.open_ receiver ~aad:""
+              ~ciphertext:(String.make 32 '\000')
+          with
+          | Error Error.Open_error -> true
+          | _ -> false)
+      | Error (Error.Invalid_encapsulation _) -> true
+      | Error _ -> false)
+
 let () =
   Alcotest.run "hpke"
     [
@@ -1746,7 +2381,7 @@ let () =
         ] );
       ( "suites",
         [
-          Alcotest.test_case "all 72 Base combinations" `Quick
+          Alcotest.test_case "all 99 Base combinations" `Quick
             all_suite_round_trips;
           Alcotest.test_case "PSK all KEMs" `Quick psk_round_trips;
           Alcotest.test_case "Auth and AuthPSK all Diffie-Hellman KEMs" `Quick
@@ -1775,6 +2410,21 @@ let () =
           Alcotest.test_case "no Auth or AuthPSK mode" `Quick
             mlkem_has_no_auth_modes;
         ] );
+      ( "PQ/T hybrid KEMs",
+        [
+          Alcotest.test_case "keys" `Quick hybrid_keys;
+          Alcotest.test_case "encapsulations" `Quick hybrid_encapsulations;
+          Alcotest.test_case "rejection sampling" `Quick
+            hybrid_rejection_sampling;
+        ] );
+      ( "draft-ietf-hpke-hpke-04",
+        [
+          Alcotest.test_case "KDF registry" `Quick draft_registry;
+          Alcotest.test_case "one-stage round trips" `Quick draft_round_trips;
+          Alcotest.test_case "HKDF suites are RFC 9180's" `Quick
+            draft_hkdf_is_rfc9180;
+          Alcotest.test_case "one-stage limits" `Quick draft_one_stage_limits;
+        ] );
       ( "suite primitives",
         [
           Alcotest.test_case "algorithm sizes" `Quick algorithm_sizes;
@@ -1794,5 +2444,7 @@ let () =
             qcheck_peer_input_total;
           QCheck_alcotest.to_alcotest ~speed_level:`Quick
             qcheck_mlkem_peer_input_total;
+          QCheck_alcotest.to_alcotest ~speed_level:`Quick
+            qcheck_hybrid_peer_input_total;
         ] );
     ]

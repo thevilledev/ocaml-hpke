@@ -10,6 +10,6 @@
  (name hpke)
  (synopsis "Idiomatic RFC 9180 Hybrid Public Key Encryption for OCaml")
  (description
-  "A misuse-resistant OCaml implementation of the HPKE Base, PSK, Auth, and AuthPSK modes, with Diffie-Hellman and post-quantum ML-KEM KEMs, built on Mirage Crypto primitives.")
+  "A misuse-resistant OCaml implementation of the HPKE Base, PSK, Auth, and AuthPSK modes, with Diffie-Hellman, post-quantum ML-KEM, and post-quantum/traditional hybrid KEMs, built on Mirage Crypto primitives.")
  (tags
   (cryptography hpke rfc9180 "hybrid encryption" post-quantum)))
