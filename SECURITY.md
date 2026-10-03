@@ -2,9 +2,9 @@
 
 ## Supported versions
 
-No released version is currently supported for production use. The `0.1.x`
+No released version is currently supported for production use. The `0.x`
 series is intended for interoperability review. Security fixes will be applied
-to the latest `0.1.x` release until a stable policy is published with `1.0.0`.
+to the latest `0.x` release until a stable policy is published with `1.0.0`.
 
 ## Reporting a vulnerability
 
