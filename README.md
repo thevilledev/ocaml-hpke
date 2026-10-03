@@ -107,7 +107,7 @@ peer-controlled failures as `Open_error`.
 
 ML-KEM and hybrid KEMs support Base and PSK only. `Hpke.Draft_hpke_04`
 implements the successor draft with those two modes; `Hpke.Rfc9180` keeps
-its RFC wire behavior. Hybrid KEMs and `Draft_hpke_04` require 0.4.0-rc1;
+its RFC wire behavior. Hybrid KEMs and `Draft_hpke_04` require 0.4.0 or newer;
 see [installation options](https://ville.dev/ocaml-hpke/usage.html#install).
 
 ## Documentation

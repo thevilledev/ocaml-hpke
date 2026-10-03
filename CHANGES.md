@@ -1,13 +1,13 @@
 # Changelog
 
-## 0.4.0-rc1 — 2026-09-26
-
-A release candidate for 0.4.0, tagged for testing and not submitted to the opam
-repository; 0.3.0 remains the latest stable release.
+## 0.4.0 — 2026-10-03
 
 Adds the post-quantum/traditional hybrid KEMs, and the successor draft of HPKE
 with the SHAKE KDFs in a module of its own. `Kem.id` gains constructors, which
 exhaustive matches must handle.
+
+The code is that of 0.4.0-rc1, the release candidate tagged on 2026-09-26 and
+not submitted to the opam repository; only the documentation has changed since.
 
 - Add `Kem.Mlkem768_p256` (MLKEM768-P256, `0x0050`), `Kem.Mlkem768_x25519`
   (MLKEM768-X25519, or X-Wing, `0x647a`), and `Kem.Mlkem1024_p384`

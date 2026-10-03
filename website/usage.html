@@ -44,11 +44,12 @@
       <p>Requires an initialized opam switch with 64-bit OCaml 4.14+ and Dune 3.12+.</p>
       <pre><code>opam install hpke</code></pre>
       <p>
-        These docs cover the 0.4.0-rc1 checkout. The basic example also works
-        with 0.3.0. To try the hybrid KEMs and <code>Draft_hpke_04</code>, pin
-        the release candidate, which is not published in opam-repository:
+        These docs cover 0.4.0. The basic example also works with 0.3.0.
+        opam-repository takes a release only after review, so it can trail the
+        newest tag. To use the hybrid KEMs and <code>Draft_hpke_04</code> before
+        0.4.0 lands there, pin the tagged source:
       </p>
-      <pre><code>opam pin add hpke git+https://github.com/thevilledev/ocaml-hpke.git#v0.4.0-rc1</code></pre>
+      <pre><code>opam pin add hpke git+https://github.com/thevilledev/ocaml-hpke.git#v0.4.0</code></pre>
 
       <h2 id="one-message">Encrypt and decrypt one message</h2>
       <p>Create an empty directory with these three files.</p>
@@ -174,7 +175,7 @@ let encode_public public_key =
 
       <h2 id="ml-kem">Post-quantum and hybrid KEMs</h2>
       <p>Choose the KEM in both the suite and key generation:</p>
-      <pre><code>let kem = Kem.Mlkem768_x25519  (* X-Wing; requires 0.4.0-rc1 *)
+      <pre><code>let kem = Kem.Mlkem768_x25519  (* X-Wing; requires 0.4.0 *)
 let suite =
   Suite.create ~kem ~kdf:Kdf.Hkdf_sha256 ~aead:Aead.Chacha20_poly1305
 let make_keys ~rng = generate_key_pair ~rng kem</code></pre>
